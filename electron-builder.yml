@@ -1,0 +1,25 @@
+appId: com.fairbrook.ledger
+productName: ledger
+directories:
+  buildResources: build
+files:
+  - out/**
+  - package.json
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Development
+  # Window app_id/WM_CLASS = desktopName from package.json, so docks match it to the launcher.
+  syncDesktopName: true
+appImage:
+  # zstd decompresses fastest at startup (supported by the new runtime only).
+  compression: zstd
+# Use the new AppImage toolset (appimagetool + the static type2-runtime). Unlike the
+# legacy runtime it doesn't dynamically link libfuse2, so the AppImage runs on
+# modern distros without installing the deprecated libfuse2 package.
+toolsets:
+  appimage: '1.0.3'
