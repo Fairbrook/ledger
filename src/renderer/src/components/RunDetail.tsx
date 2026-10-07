@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Result, Run, RunFile } from '@shared/types'
-import { api, formatDate, runLabel } from '../api'
+import { api, formatDate, runLabel, useDataVersion } from '../api'
 import FileList from './FileList'
 import ResultsTable from './ResultsTable'
 import { useUi } from './Ui'
@@ -11,6 +11,7 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
   const [results, setResults] = useState<Result[]>([])
   const [files, setFiles] = useState<RunFile[]>([])
   const [knownMetrics, setKnownMetrics] = useState<{ label: string; unit: string }[]>([])
+  const dataVersion = useDataVersion()
 
   const reload = useCallback(async () => {
     try {
@@ -25,7 +26,7 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
     } catch (e) {
       ui.fail(e)
     }
-  }, [run.id, run.experimentId, ui])
+  }, [run.id, run.experimentId, ui, dataVersion])
 
   useEffect(() => {
     reload()

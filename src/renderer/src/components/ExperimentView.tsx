@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Experiment, Run } from '@shared/types'
-import { api, formatDate, runLabel } from '../api'
+import { api, formatDate, runLabel, useDataVersion } from '../api'
 import CompareView from './CompareView'
 import RunDetail from './RunDetail'
 import RunForm, { type RunFormTarget } from './RunForm'
@@ -16,6 +16,7 @@ export default function ExperimentView(props: { experiment: Experiment; onEdit: 
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null)
   const [runForm, setRunForm] = useState<RunFormTarget | null>(null)
   const [tab, setTab] = useState<Tab>('runs')
+  const dataVersion = useDataVersion()
 
   const reloadRuns = useCallback(async () => {
     try {
@@ -27,7 +28,7 @@ export default function ExperimentView(props: { experiment: Experiment; onEdit: 
     } catch (e) {
       ui.fail(e)
     }
-  }, [exp.id, ui])
+  }, [exp.id, ui, dataVersion])
 
   useEffect(() => {
     reloadRuns()
