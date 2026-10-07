@@ -21,6 +21,9 @@ type Row = Record<string, unknown>
 
 const now = () => new Date().toISOString()
 
+/** Thrown when a lookup by id finds nothing (the local API maps it to 404). */
+export class NotFoundError extends Error {}
+
 /**
  * All experiment data: SQLite for records, plus a managed folder for attached files:
  *   <filesRoot>/<experimentId>/<runId>/<original file name>
@@ -53,7 +56,7 @@ export class Ledger {
          FROM experiments e WHERE e.id = ?`
       )
       .get(id) as Row | undefined
-    if (!row) throw new Error(`Experiment ${id} not found`)
+    if (!row) throw new NotFoundError(`Experiment ${id} not found`)
     return toExperiment(row)
   }
 
@@ -77,7 +80,7 @@ export class Ledger {
          updated_at = ? WHERE id = ?`
       )
       .run(e.name, e.subject, e.objective, e.description, e.conclusions, e.status, now(), id)
-    if (!changes) throw new Error(`Experiment ${id} not found`)
+    if (!changes) throw new NotFoundError(`Experiment ${id} not found`)
     return this.getExperiment(id)
   }
 
@@ -102,7 +105,7 @@ export class Ledger {
 
   getRun(id: number): Run {
     const row = this.db.prepare(`${RUN_SELECT} WHERE r.id = ?`).get(id) as Row | undefined
-    if (!row) throw new Error(`Run ${id} not found`)
+    if (!row) throw new NotFoundError(`Run ${id} not found`)
     return this.withParams([toRun(row)])[0]
   }
 
@@ -189,7 +192,7 @@ export class Ledger {
 
   getResult(id: number): Result {
     const row = this.db.prepare('SELECT * FROM results WHERE id = ?').get(id) as Row | undefined
-    if (!row) throw new Error(`Result ${id} not found`)
+    if (!row) throw new NotFoundError(`Result ${id} not found`)
     return toResult(row)
   }
 
@@ -198,7 +201,7 @@ export class Ledger {
     const { changes } = this.db
       .prepare('UPDATE results SET label = ?, value = ?, unit = ? WHERE id = ?')
       .run(r.label, r.value, r.unit, id)
-    if (!changes) throw new Error(`Result ${id} not found`)
+    if (!changes) throw new NotFoundError(`Result ${id} not found`)
     return this.getResult(id)
   }
 
@@ -218,7 +221,7 @@ export class Ledger {
 
   getFile(id: number): RunFile {
     const row = this.db.prepare('SELECT * FROM files WHERE id = ?').get(id) as Row | undefined
-    if (!row) throw new Error(`File ${id} not found`)
+    if (!row) throw new NotFoundError(`File ${id} not found`)
     return toFile(row)
   }
 

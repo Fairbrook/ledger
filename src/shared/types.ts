@@ -100,10 +100,58 @@ export interface Comparison {
 
 export const metricKey = (label: string, unit: string) => `${label}\u0000${unit}`
 
+/** A run with its results and attached files, as returned by the local API and MCP server. */
+export interface RunWithData extends Run {
+  results: Result[]
+  files: RunFile[]
+}
+
+/** An experiment with every run, result and file record. */
+export interface ExperimentDetail extends Experiment {
+  runs: RunWithData[]
+}
+
+/** Summary statistics of one metric across the runs that logged it (per-run means, see Comparison). */
+export interface MetricStats {
+  label: string
+  unit: string
+  /** Number of runs with a value. */
+  n: number
+  mean: number
+  /** Sample standard deviation (0 when n < 2). */
+  std: number
+  min: { value: number; runSeq: number }
+  max: { value: number; runSeq: number }
+  /** Value in the first and last run (by seq) that logged it. */
+  first: { value: number; runSeq: number }
+  last: { value: number; runSeq: number }
+}
+
+/** How a metric moves with a parameter that varies between runs. */
+export interface ParamEffect {
+  param: string
+  metric: { label: string; unit: string }
+  /** Numeric parameter: Pearson correlation and least-squares slope (metric per unit of param). */
+  numeric?: { n: number; correlation: number | null; slope: number | null }
+  /** Mean of the metric for each value of the parameter. */
+  groups: { value: string; n: number; mean: number }[]
+}
+
+export interface Analysis {
+  experiment: Pick<Experiment, 'id' | 'name' | 'subject' | 'objective' | 'status'>
+  runCount: number
+  outcomes: Record<RunOutcome, number>
+  metrics: MetricStats[]
+  /** One entry per (varying parameter, metric) pair with values in at least two runs. */
+  paramEffects: ParamEffect[]
+}
+
 export interface AppInfo {
   dataDir: string
   filesRoot: string
   dbFile: string
+  /** Base URL of the local HTTP API, or null when it is disabled or failed to start. */
+  apiUrl?: string | null
 }
 
 /** API exposed to the renderer by the preload script (window.ledger). */
@@ -133,4 +181,7 @@ export interface LedgerApi {
   openFile(id: number): Promise<void>
   revealFile(id: number): Promise<void>
   deleteFile(id: number): Promise<void>
+
+  /** Subscribes to changes made outside the window (local API, MCP server). Returns an unsubscribe function. */
+  onExternalChange(cb: () => void): () => void
 }

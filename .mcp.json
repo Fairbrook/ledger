@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ledger": {
+      "command": "node",
+      "args": ["--disable-warning=ExperimentalWarning", "--import", "tsx", "src/cli/mcp.ts"]
+    }
+  }
+}

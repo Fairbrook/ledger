@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Experiment } from '@shared/types'
-import { api } from './api'
+import { api, useDataVersion } from './api'
 import ExperimentForm from './components/ExperimentForm'
 import ExperimentView from './components/ExperimentView'
 import { useUi } from './components/Ui'
@@ -11,6 +11,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editing, setEditing] = useState<Experiment | 'new' | null>(null)
   const [filter, setFilter] = useState('')
+  const dataVersion = useDataVersion()
 
   const refresh = useCallback(async () => {
     try {
@@ -20,7 +21,7 @@ export default function App() {
     } catch (e) {
       ui.fail(e)
     }
-  }, [ui])
+  }, [ui, dataVersion])
 
   useEffect(() => {
     refresh()

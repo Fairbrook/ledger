@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
 import { metricKey, type Comparison } from '@shared/types'
-import { api, formatDate, formatNumber } from '../api'
+import { api, formatDate, formatNumber, useDataVersion } from '../api'
 import { useUi } from './Ui'
 
 /** Every run as a row; parameters and metrics as columns, with the best/worst value per metric marked. */
 export default function CompareView(props: { experimentId: number; onOpenRun: (runId: number) => void }) {
   const ui = useUi()
   const [c, setC] = useState<Comparison | null>(null)
+  const dataVersion = useDataVersion()
 
   useEffect(() => {
     api.compareRuns(props.experimentId).then(setC, ui.fail)
-  }, [props.experimentId, ui])
+  }, [props.experimentId, ui, dataVersion])
 
   if (!c) return null
   if (c.runs.length === 0)

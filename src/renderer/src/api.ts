@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react'
 import type { LedgerApi } from '@shared/types'
 
 declare global {
@@ -7,6 +8,20 @@ declare global {
 }
 
 export const api = window.ledger
+
+// Bumped whenever data changes outside the window (local API, MCP server), so views reload.
+let dataVersion = 0
+const listeners = new Set<() => void>()
+api.onExternalChange(() => {
+  dataVersion++
+  for (const l of listeners) l()
+})
+const subscribe = (l: () => void) => {
+  listeners.add(l)
+  return () => void listeners.delete(l)
+}
+/** Changes when data was modified outside the window; add it to a loader's dependencies to refetch. */
+export const useDataVersion = () => useSyncExternalStore(subscribe, () => dataVersion)
 
 export const cleanError = (e: unknown) =>
   String((e as Error)?.message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')

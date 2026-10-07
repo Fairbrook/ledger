@@ -25,7 +25,13 @@ const api: LedgerApi = {
   attachFiles: (runId) => ipcRenderer.invoke('files:attach', runId),
   openFile: (id) => ipcRenderer.invoke('files:open', id),
   revealFile: (id) => ipcRenderer.invoke('files:reveal', id),
-  deleteFile: (id) => ipcRenderer.invoke('files:delete', id)
+  deleteFile: (id) => ipcRenderer.invoke('files:delete', id),
+
+  onExternalChange: (cb) => {
+    const listener = () => cb()
+    ipcRenderer.on('ledger:changed', listener)
+    return () => ipcRenderer.off('ledger:changed', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('ledger', api)

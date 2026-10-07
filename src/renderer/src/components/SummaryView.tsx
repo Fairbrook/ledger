@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Experiment } from '@shared/types'
 import { api } from '../api'
 import { useUi } from './Ui'
@@ -10,7 +10,18 @@ export default function SummaryView(props: { experiment: Experiment; onSaved: ()
   const [description, setDescription] = useState(exp.description)
   const [conclusions, setConclusions] = useState(exp.conclusions)
   const [saving, setSaving] = useState(false)
-  const dirty = description !== exp.description || conclusions !== exp.conclusions
+  const [base, setBase] = useState({ description: exp.description, conclusions: exp.conclusions })
+  const dirty = description !== base.description || conclusions !== base.conclusions
+
+  // Saved text changed (here or from the API/MCP): take it, unless the user has unsaved edits.
+  useEffect(() => {
+    if (exp.description === base.description && exp.conclusions === base.conclusions) return
+    if (!dirty) {
+      setDescription(exp.description)
+      setConclusions(exp.conclusions)
+    }
+    setBase({ description: exp.description, conclusions: exp.conclusions })
+  }, [exp.description, exp.conclusions])
 
   const save = async () => {
     setSaving(true)
