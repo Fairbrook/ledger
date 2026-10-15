@@ -30,7 +30,7 @@ const api: LedgerApi = {
   deleteResult: (id) => ipcRenderer.invoke('results:delete', id),
 
   listFiles: (runId) => ipcRenderer.invoke('files:list', runId),
-  attachFiles: (runId) => ipcRenderer.invoke('files:attach', runId),
+  attachFiles: (runId, opts) => ipcRenderer.invoke('files:attach', runId, opts),
   openFile: (id) => ipcRenderer.invoke('files:open', id),
   revealFile: (id) => ipcRenderer.invoke('files:reveal', id),
   deleteFile: (id) => ipcRenderer.invoke('files:delete', id),

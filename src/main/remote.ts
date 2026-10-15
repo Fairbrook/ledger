@@ -5,7 +5,7 @@ import type { RemoteSettings, RemoteStatus } from '../shared/types'
 
 /**
  * Where run files are mirrored. Paths are relative to the remote's base and use the same layout as the
- * local storage root (`<experimentId>/<runId>/<name>`). rclone is the only implementation, so the app
+ * local storage root (`<experimentId>/<runId>/<relative path>`). rclone is the only implementation, so the app
  * supports whatever providers rclone does; tests use a fake.
  */
 export interface RemoteStore {

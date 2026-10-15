@@ -26,7 +26,7 @@ export interface RunSpec extends Partial<Omit<RunInput, 'params'>> {
   /** Parameters as a list or as a `{ key: value }` object. */
   params?: RunInput['params'] | Record<string, string | number | boolean>
   results?: ResultInput[]
-  /** Absolute paths of files to copy into the run's folder. */
+  /** Absolute paths of files or folders to copy into the run's folder (folders keep their structure). */
   files?: string[]
 }
 

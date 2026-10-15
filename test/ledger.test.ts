@@ -132,6 +132,47 @@ test('files are copied into <root>/<experiment>/<run>/ with numbered duplicates'
   }
 })
 
+test('folders keep their structure and `into` targets a subfolder', () => {
+  const { root, ledger, done } = setup()
+  try {
+    const e = ledger.createExperiment(exp())
+    const r = ledger.createRun(e.id, run())
+    const sweep = path.join(root, 'sweep')
+    fs.mkdirSync(path.join(sweep, 'sub'), { recursive: true })
+    fs.writeFileSync(path.join(sweep, 'a.csv'), 'a')
+    fs.writeFileSync(path.join(sweep, 'sub', 'b.csv'), 'bb')
+
+    const files = ledger.attachFiles(r.id, [sweep])
+    assert.deepEqual(files.map((f) => f.filename), ['sweep/a.csv', 'sweep/sub/b.csv'])
+    assert.deepEqual(files.map((f) => f.storedPath), [`${e.id}/${r.id}/sweep/a.csv`, `${e.id}/${r.id}/sweep/sub/b.csv`])
+    for (const f of files) assert.ok(fs.existsSync(ledger.filePath(f)))
+
+    // Into a subfolder, with a clash numbered inside it.
+    const one = path.join(root, 'x.csv')
+    fs.writeFileSync(one, 'x')
+    const [p1, p2] = [...ledger.attachFiles(r.id, [one], { into: 'plots\\run1/' }), ...ledger.attachFiles(r.id, [one], { into: 'plots/run1' })]
+    assert.equal(p1.filename, 'plots/run1/x.csv')
+    assert.equal(p2.storedPath, `${e.id}/${r.id}/plots/run1/x_1.csv`)
+
+    // Bad targets and empty folders abort without leaving anything behind.
+    const before = ledger.listFiles(r.id).length
+    for (const into of ['../x', '/abs', 'a/../../b']) assert.throws(() => ledger.attachFiles(r.id, [one], { into }))
+    const empty = path.join(root, 'empty')
+    fs.mkdirSync(empty)
+    assert.throws(() => ledger.attachFiles(r.id, [empty]), /no files/)
+    assert.throws(() => ledger.attachFiles(r.id, [one, path.join(root, 'nope.bin')], { into: 'new' }))
+    assert.equal(ledger.listFiles(r.id).length, before)
+    assert.ok(!fs.existsSync(path.join(ledger.runDir(e.id, r.id), 'new')))
+
+    // Deleting the last file of a subfolder removes the folder; siblings keep theirs.
+    ledger.deleteFile(files[1].id)
+    assert.ok(!fs.existsSync(path.join(ledger.runDir(e.id, r.id), 'sweep', 'sub')))
+    assert.ok(fs.existsSync(path.join(ledger.runDir(e.id, r.id), 'sweep', 'a.csv')))
+  } finally {
+    done()
+  }
+})
+
 test('deleting a run or experiment cascades to results, files and stored files', () => {
   const { root, ledger, done } = setup()
   try {

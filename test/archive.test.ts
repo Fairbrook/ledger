@@ -121,6 +121,20 @@ test('archive deletes local files but keeps records; restore brings them back', 
   }
 })
 
+test('nested files survive archive and restore at the same path', async () => {
+  const { ledger, sync, run, src, done } = setup()
+  try {
+    const [f] = ledger.attachFiles(run.id, [src], { into: 'plots/run1' })
+    await sync.archiveRun(run.id)
+    assert.ok(!fs.existsSync(ledger.runDir(run.experimentId, run.id)))
+    await sync.restoreRun(run.id)
+    assert.equal(f.filename, 'plots/run1/' + path.basename(src))
+    assert.equal(fs.readFileSync(ledger.filePath(f), 'utf8'), 'a,b\n1,2\n')
+  } finally {
+    done()
+  }
+})
+
 test('a failed verification leaves the run and its local files untouched', async () => {
   const { ledger, sync, remote, run, src, done } = setup()
   try {

@@ -26,7 +26,7 @@ export class NotFoundError extends Error {}
 
 /**
  * All experiment data: SQLite for records, plus a managed folder for attached files:
- *   <filesRoot>/<experimentId>/<runId>/<original file name>
+ *   <filesRoot>/<experimentId>/<runId>/<relative path, optionally in subfolders>
  * The renderer never touches either directly; everything goes through this class via IPC.
  */
 export class Ledger {
@@ -231,13 +231,16 @@ export class Ledger {
   }
 
   /**
-   * Copies (never moves) each source file into the run's folder, renaming on name clashes
-   * (out.csv → out_1.csv), and records them. All-or-nothing: on failure, copies made so far are removed.
+   * Copies (never moves) each source into the run's folder and records the files. A directory is copied
+   * with its whole tree (`sweep/sub/b.csv`); `opts.into` puts everything under a subfolder of the run.
+   * Name clashes are renamed (out.csv → out_1.csv). All-or-nothing: on failure, copies made so far are removed.
    */
-  attachFiles(runId: number, sourcePaths: string[]): RunFile[] {
+  attachFiles(runId: number, sourcePaths: string[], opts: { into?: string } = {}): RunFile[] {
     const run = this.getRun(runId)
     if (run.archivedAt) throw new Error(`Run #${run.seq} is archived — restore it first`)
     const dir = this.runDir(run.experimentId, runId)
+    const into = cleanSubfolder(opts.into)
+    const entries = sourcePaths.flatMap(expandSource)
     fs.mkdirSync(dir, { recursive: true })
     const copied: string[] = []
     try {
@@ -245,30 +248,37 @@ export class Ledger {
         const insert = this.db.prepare(
           'INSERT INTO files (run_id, filename, stored_path, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)'
         )
-        const out = sourcePaths.map((src) => {
-          const stat = fs.statSync(src)
-          if (!stat.isFile()) throw new Error(`${src} is not a file`)
-          const filename = path.basename(src)
-          const dest = uniquePath(dir, filename)
+        const out = entries.map(({ src, rel }) => {
+          const filename = into ? `${into}/${rel}` : rel
+          const destDir = path.join(dir, path.dirname(filename))
+          fs.mkdirSync(destDir, { recursive: true })
+          const dest = uniquePath(destDir, path.basename(filename))
           fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL)
           copied.push(dest)
-          const rel = path.relative(this.filesRoot, dest).split(path.sep).join('/')
-          return Number(insert.run(runId, filename, rel, stat.size, now()).lastInsertRowid)
+          const stored = path.relative(this.filesRoot, dest).split(path.sep).join('/')
+          const size = fs.statSync(dest).size
+          return Number(insert.run(runId, filename, stored, size, now()).lastInsertRowid)
         })
         this.touchExperiment(run.experimentId)
         return out
       })
       return ids.map((id) => this.getFile(id))
     } catch (err) {
-      for (const f of copied) fs.rmSync(f, { force: true })
+      for (const f of copied) {
+        fs.rmSync(f, { force: true })
+        pruneEmptyDirs(path.dirname(f), dir)
+      }
       throw err
     }
   }
 
   deleteFile(id: number): void {
     const file = this.getFile(id)
+    const { experimentId } = this.getRun(file.runId)
     this.db.prepare('DELETE FROM files WHERE id = ?').run(id)
-    fs.rmSync(this.filePath(file), { force: true })
+    const abs = this.filePath(file)
+    fs.rmSync(abs, { force: true })
+    pruneEmptyDirs(path.dirname(abs), this.runDir(experimentId, file.runId))
   }
 
   /** Throws if the file only exists on the remote (its run is archived). */
@@ -359,6 +369,43 @@ export function uniquePath(dir: string, name: string): string {
   let candidate = name
   for (let i = 1; fs.existsSync(path.join(dir, candidate)); i++) candidate = `${base}_${i}${ext}`
   return path.join(dir, candidate)
+}
+
+/** Removes `dir` and its parents while they are empty, never going above `stopAt`. */
+function pruneEmptyDirs(dir: string, stopAt: string): void {
+  const stop = path.resolve(stopAt)
+  for (let d = path.resolve(dir); d !== stop && d.startsWith(stop + path.sep); d = path.dirname(d)) {
+    try {
+      fs.rmdirSync(d)
+    } catch {
+      return // not empty (or already gone)
+    }
+  }
+}
+
+/** A file or directory to attach, as the path to copy from and its path relative to the run folder. */
+function expandSource(src: string): { src: string; rel: string }[] {
+  const stat = fs.statSync(src)
+  if (stat.isFile()) return [{ src, rel: path.basename(src) }]
+  if (!stat.isDirectory()) throw new Error(`${src} is not a file or folder`)
+  const top = path.basename(path.resolve(src))
+  const files = (fs.readdirSync(src, { withFileTypes: true, recursive: true }) as fs.Dirent[])
+    .filter((e) => e.isFile())
+    .map((e) => path.join(e.parentPath, e.name))
+    .sort()
+  if (files.length === 0) throw new Error(`${src} contains no files`)
+  return files.map((f) => ({ src: f, rel: `${top}/${path.relative(src, f).split(path.sep).join('/')}` }))
+}
+
+/** Normalises a subfolder inside a run ("plots\\a/./b" → "plots/a/b"); rejects anything that could escape it. */
+export function cleanSubfolder(input: string | undefined): string {
+  if (input === undefined || input === null) return ''
+  if (typeof input !== 'string' || input.includes('\0')) throw new Error('Invalid subfolder')
+  const raw = input.trim().replace(/\\/g, '/')
+  if (raw.startsWith('/') || /^[a-zA-Z]:/.test(raw)) throw new Error(`Subfolder "${input}" must be relative`)
+  const parts = raw.split('/').filter((p) => p !== '' && p !== '.')
+  if (parts.includes('..')) throw new Error(`Subfolder "${input}" must stay inside the run`)
+  return parts.join('/')
 }
 
 // ---- validation -----------------------------------------------------------------

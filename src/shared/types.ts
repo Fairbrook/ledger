@@ -84,8 +84,9 @@ export interface ResultInput {
 export interface RunFile {
   id: number
   runId: number
+  /** Path relative to the run's folder, '/'-separated; may include subfolders (plots/fig.png). */
   filename: string
-  /** Path relative to the storage root: <experimentId>/<runId>/<name>. */
+  /** Path relative to the storage root: <experimentId>/<runId>/<filename> (last segment numbered on clashes). */
   storedPath: string
   sizeBytes: number
   createdAt: string
@@ -209,8 +210,11 @@ export interface LedgerApi {
   deleteResult(id: number): Promise<void>
 
   listFiles(runId: number): Promise<RunFile[]>
-  /** Opens a native file picker and attaches the chosen files. Returns the files added. */
-  attachFiles(runId: number): Promise<RunFile[]>
+  /**
+   * Opens a native picker (files, or folders with `folder`) and attaches the choice, optionally into a
+   * subfolder of the run. Returns the files added.
+   */
+  attachFiles(runId: number, opts?: { folder?: boolean; into?: string }): Promise<RunFile[]>
   openFile(id: number): Promise<void>
   revealFile(id: number): Promise<void>
   deleteFile(id: number): Promise<void>

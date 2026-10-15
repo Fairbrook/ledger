@@ -120,10 +120,11 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
   })
 
   add('POST', '/api/runs/:id/files', ({ params, body }) => {
-    const paths = object(body).paths
+    const { paths, into } = object(body)
     if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string'))
-      throw new HttpError(400, 'Expected { "paths": ["/absolute/path", ...] }')
-    const files = ledger.attachFiles(id(params), paths)
+      throw new HttpError(400, 'Expected { "paths": ["/absolute/file/or/folder", ...], "into": "optional/subfolder" }')
+    if (into !== undefined && typeof into !== 'string') throw new HttpError(400, '"into" must be a string')
+    const files = ledger.attachFiles(id(params), paths, { into })
     void opts.sync?.kick()
     return created(files)
   })

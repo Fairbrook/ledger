@@ -5,7 +5,7 @@ import { RemoteSync } from './archive'
 import { comparisonToCsv } from './csv'
 import { openDatabase } from './db'
 import { DEFAULT_API_PORT, startApiServer } from './http'
-import { Ledger } from './ledger'
+import { Ledger, cleanSubfolder } from './ledger'
 import { resolvePaths } from './paths'
 import { remoteFromConfig, resolveRemoteConfig } from './remote'
 import type { AppInfo, ExperimentInput, RemoteSettings, ResultInput, RunInput } from '../shared/types'
@@ -143,13 +143,15 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('files:list', (_e, runId: number) => ledger.listFiles(runId))
   // The picker runs here, so the renderer never supplies arbitrary paths to copy.
-  ipcMain.handle('files:attach', async (_e, runId: number) => {
+  ipcMain.handle('files:attach', async (_e, runId: number, opts?: { folder?: boolean; into?: string }) => {
+    const into = cleanSubfolder(opts?.into)
+    const what = opts?.folder ? 'folders' : 'files'
     const res = await dialog.showOpenDialog(win!, {
-      title: 'Attach files to run',
-      properties: ['openFile', 'multiSelections']
+      title: into ? `Attach ${what} to run, into ${into}/` : `Attach ${what} to run`,
+      properties: [opts?.folder ? 'openDirectory' : 'openFile', 'multiSelections']
     })
     if (res.canceled || res.filePaths.length === 0) return []
-    const added = ledger.attachFiles(runId, res.filePaths)
+    const added = ledger.attachFiles(runId, res.filePaths, { into })
     void sync.kick()
     return added
   })

@@ -770,6 +770,15 @@ input[type='checkbox'] {
 .file-name {
   overflow-wrap: anywhere;
 }
+.folder-row {
+  cursor: pointer;
+  font-weight: 500;
+}
+.tree-toggle {
+  display: inline-block;
+  width: 14px;
+  color: var(--muted, inherit);
+}
 .nowrap {
   white-space: nowrap;
 }

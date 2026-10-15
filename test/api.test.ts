@@ -112,6 +112,11 @@ test('http: register, read, modify and analyse over the local API', async () => 
     assert.equal(run.body.seq, 4)
     assert.equal(run.body.files[0].filename, 'log.txt')
 
+    const sub = await call('POST', `/runs/${run.body.id}/files`, { paths: [src], into: 'logs/sensor' })
+    assert.equal(sub.status, 201)
+    assert.equal(sub.body[0].filename, 'logs/sensor/log.txt')
+    assert.equal((await call('POST', `/runs/${run.body.id}/files`, { paths: [src], into: '../up' })).status >= 400, true)
+
     const more = await call('POST', `/runs/${run.body.id}/results`, [{ label: 'rise time', value: 0.4, unit: 's' }])
     assert.equal(more.status, 201)
     const upd = await call('PATCH', `/results/${more.body[0].id}`, { value: 0.5 })
@@ -135,7 +140,7 @@ test('http: register, read, modify and analyse over the local API', async () => 
 
     assert.equal((await call('DELETE', `/runs/${run.body.id}`)).status, 204)
     assert.equal((await call('GET', `/experiments/${id}`)).body.runs.length, 3)
-    assert.equal(changes, 6, 'onChange fires once per successful write')
+    assert.equal(changes, 7, 'onChange fires once per successful write')
   } finally {
     server.close()
     done()

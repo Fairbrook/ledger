@@ -44,7 +44,7 @@ const runSpec = z.object({
   ...runFields,
   params: params.optional(),
   results: z.array(result).optional(),
-  files: z.array(z.string()).optional().describe('Absolute paths of files to copy into the run')
+  files: z.array(z.string()).optional().describe('Absolute paths of files or folders to copy into the run (folders keep their structure)')
 })
 
 const READ_LIMIT = 200_000
@@ -251,10 +251,15 @@ export function createMcpServer(ledger: Ledger, sync?: RemoteSync): McpServer {
   )
   tool(
     'attach_files',
-    'Copy local files (absolute paths) into a run. The originals are left in place.',
-    { run_id: z.number().int(), paths: z.array(z.string()).min(1) },
+    'Copy local files or folders (absolute paths) into a run. A folder is copied with its whole structure; ' +
+      '`into` puts everything under a subfolder of the run (e.g. "plots/run1"). The originals are left in place.',
+    {
+      run_id: z.number().int(),
+      paths: z.array(z.string()).min(1),
+      into: z.string().optional().describe('Subfolder inside the run to copy into, e.g. "logs/sensor"')
+    },
     (a) => {
-      const files = ledger.attachFiles(a.run_id, a.paths)
+      const files = ledger.attachFiles(a.run_id, a.paths, { into: a.into })
       void sync?.kick()
       return files
     }
