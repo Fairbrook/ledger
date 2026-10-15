@@ -1,5 +1,6 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import type { RemoteSync } from './archive'
 import { comparisonToCsv } from './csv'
 import { NotFoundError, type Ledger } from './ledger'
 import {
@@ -23,6 +24,8 @@ export interface ApiOptions {
   token?: string
   /** Called after every successful write, e.g. to refresh the UI. */
   onChange?: () => void
+  /** Remote backup: uploads attached files in the background and powers archive/restore. */
+  sync?: RemoteSync
 }
 
 class HttpError extends Error {
@@ -35,7 +38,7 @@ class HttpError extends Error {
 }
 
 type Params = Record<string, string>
-type Handler = (ctx: { params: Params; query: URLSearchParams; body: any }) => unknown
+type Handler = (ctx: { params: Params; query: URLSearchParams; body: any }) => unknown | Promise<unknown>
 interface Route {
   method: string
   pattern: RegExp
@@ -65,6 +68,10 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
     routes.push({ method, pattern, keys, handler, write: method !== 'GET' })
   }
   const id = (p: Params, k = 'id') => Number(p[k])
+  const needSync = () => {
+    if (!opts.sync) throw new HttpError(409, 'Remote backup is not available in this process')
+    return opts.sync
+  }
 
   add('GET', '/api/health', () => ({ ok: true }))
 
@@ -77,6 +84,7 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
   add('DELETE', '/api/experiments/:id', ({ params }) => {
     ledger.getExperiment(id(params))
     ledger.deleteExperiment(id(params))
+    void opts.sync?.forget({ experimentId: id(params) })
   })
   add('GET', '/api/experiments/:id/compare', ({ params }) => ledger.compare(id(params)))
   add('GET', '/api/experiments/:id/compare.csv', ({ params }) => csv(comparisonToCsv(ledger.compare(id(params)))))
@@ -89,7 +97,13 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
   add('POST', '/api/experiments/:id/runs', ({ params, body }) => created(logRun(ledger, id(params), object(body))))
   add('GET', '/api/runs/:id', ({ params }) => getRunDetail(ledger, id(params)))
   add('PATCH', '/api/runs/:id', ({ params, body }) => patchRun(ledger, id(params), object(body)))
-  add('DELETE', '/api/runs/:id', ({ params }) => ledger.deleteRun(id(params)))
+  add('DELETE', '/api/runs/:id', ({ params }) => {
+    const run = ledger.getRun(id(params))
+    ledger.deleteRun(run.id)
+    void opts.sync?.forget({ experimentId: run.experimentId, runId: run.id })
+  })
+  add('POST', '/api/runs/:id/archive', ({ params }) => needSync().archiveRun(id(params)))
+  add('POST', '/api/runs/:id/restore', ({ params }) => needSync().restoreRun(id(params)))
 
   add('POST', '/api/runs/:id/results', ({ params, body }) => {
     const list = Array.isArray(body) ? body : object(body).results
@@ -109,9 +123,16 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
     const paths = object(body).paths
     if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string'))
       throw new HttpError(400, 'Expected { "paths": ["/absolute/path", ...] }')
-    return created(ledger.attachFiles(id(params), paths))
+    const files = ledger.attachFiles(id(params), paths)
+    void opts.sync?.kick()
+    return created(files)
   })
-  add('DELETE', '/api/files/:id', ({ params }) => ledger.deleteFile(id(params)))
+  add('DELETE', '/api/files/:id', ({ params }) => {
+    const file = ledger.getFile(id(params))
+    const { experimentId } = ledger.getRun(file.runId)
+    ledger.deleteFile(file.id)
+    void opts.sync?.forget({ experimentId, filePath: file.storedPath })
+  })
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -128,7 +149,7 @@ export function createApiServer(ledger: Ledger, opts: ApiOptions = {}): http.Ser
       const m = route.pattern.exec(url.pathname)!
       const params = Object.fromEntries(route.keys.map((k, i) => [k, m[i + 1]]))
       const body = route.write ? await readJson(req) : undefined
-      const out = route.handler({ params, query: url.searchParams, body })
+      const out = await route.handler({ params, query: url.searchParams, body })
       if (route.write) opts.onChange?.()
       send(res, out)
     } catch (err) {

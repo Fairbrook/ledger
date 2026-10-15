@@ -2,7 +2,7 @@ import type { RunFile } from '@shared/types'
 import { api, formatBytes, formatDate } from '../api'
 import { useUi } from './Ui'
 
-export default function FileList(props: { runId: number; files: RunFile[]; onChanged: () => void }) {
+export default function FileList(props: { runId: number; files: RunFile[]; archived: boolean; onChanged: () => void }) {
   const ui = useUi()
 
   const attach = async () => {
@@ -38,6 +38,8 @@ export default function FileList(props: { runId: number; files: RunFile[]; onCha
 
   const act = (fn: () => Promise<void>) => () => fn().catch(ui.fail)
   const stored = (f: RunFile) => f.storedPath.split('/').pop()
+  const backup = (f: RunFile) =>
+    props.archived ? 'remote only' : f.backedUpAt ? '✓ backed up' : 'not backed up'
 
   return (
     <section className="block">
@@ -47,7 +49,7 @@ export default function FileList(props: { runId: number; files: RunFile[]; onCha
           {props.files.length} attached
         </span>
         <span className="spacer" />
-        <button className="btn small" onClick={attach}>
+        <button className="btn small" onClick={attach} disabled={props.archived} title={props.archived ? 'Restore the run to attach files' : undefined}>
           Attach files…
         </button>
       </div>
@@ -58,23 +60,25 @@ export default function FileList(props: { runId: number; files: RunFile[]; onCha
               <th>Name</th>
               <th className="num">Size</th>
               <th>Added</th>
+              <th>Remote</th>
               <th className="actions" />
             </tr>
           </thead>
           <tbody>
             {props.files.map((f) => (
-              <tr key={f.id} onDoubleClick={act(() => api.openFile(f.id))} title="Double-click to open">
+              <tr key={f.id} onDoubleClick={props.archived ? undefined : act(() => api.openFile(f.id))} title={props.archived ? 'Archived: restore the run to open' : 'Double-click to open'}>
                 <td className="file-name">
                   {f.filename}
                   {stored(f) !== f.filename && <span className="muted small"> (stored as {stored(f)})</span>}
                 </td>
                 <td className="num nowrap">{formatBytes(f.sizeBytes)}</td>
                 <td className="muted nowrap">{formatDate(f.createdAt)}</td>
+                <td className={`nowrap small ${f.backedUpAt || props.archived ? 'muted' : 'warn-text'}`}>{backup(f)}</td>
                 <td className="actions">
-                  <button className="btn small subtle" onClick={act(() => api.openFile(f.id))}>
+                  <button className="btn small subtle" disabled={props.archived} onClick={act(() => api.openFile(f.id))}>
                     Open
                   </button>
-                  <button className="btn small subtle" onClick={act(() => api.revealFile(f.id))}>
+                  <button className="btn small subtle" disabled={props.archived} onClick={act(() => api.revealFile(f.id))}>
                     Show in folder
                   </button>
                   <button className="btn small subtle danger" onClick={() => remove(f)}>

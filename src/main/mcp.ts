@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { EXPERIMENT_STATUSES, RUN_OUTCOMES } from '../shared/types'
 import { comparisonToCsv } from './csv'
+import type { RemoteSync } from './archive'
 import type { Ledger } from './ledger'
 import {
   analyze,
@@ -52,7 +53,7 @@ const READ_LIMIT = 200_000
  * MCP server exposing the ledger to an agent such as Claude Code: register experiments and runs,
  * edit them, and pull comparisons, statistics and attached files for analysis.
  */
-export function createMcpServer(ledger: Ledger): McpServer {
+export function createMcpServer(ledger: Ledger, sync?: RemoteSync): McpServer {
   const server = new McpServer(
     { name: 'ledger', version: '0.1.0' },
     {
@@ -63,6 +64,11 @@ export function createMcpServer(ledger: Ledger): McpServer {
         'read_run_file to inspect attached logs or CSVs. Reuse existing metric labels and units so runs line up.'
     }
   )
+
+  const needSync = () => {
+    if (!sync) throw new Error('Remote backup is not available in this process')
+    return sync
+  }
 
   const tool = <S extends z.ZodRawShape>(
     name: string,
@@ -135,6 +141,7 @@ export function createMcpServer(ledger: Ledger): McpServer {
     (a) => {
       const file = ledger.getFile(a.file_id)
       const limit = a.max_bytes ?? READ_LIMIT
+      ledger.assertLocal(file)
       const fd = fs.openSync(ledger.filePath(file), 'r')
       try {
         const buf = Buffer.alloc(Math.min(limit, file.sizeBytes))
@@ -172,6 +179,7 @@ export function createMcpServer(ledger: Ledger): McpServer {
     (a) => {
       ledger.getExperiment(a.experiment_id)
       ledger.deleteExperiment(a.experiment_id)
+      void sync?.forget({ experimentId: a.experiment_id })
     },
     destructive
   )
@@ -179,7 +187,11 @@ export function createMcpServer(ledger: Ledger): McpServer {
     'log_run',
     'Add the next run to an experiment, with its parameters, outcome, notes, results and files.',
     { experiment_id: z.number().int(), ...runSpec.shape },
-    ({ experiment_id, ...spec }) => logRun(ledger, experiment_id, spec as any)
+    ({ experiment_id, ...spec }) => {
+      const run = logRun(ledger, experiment_id, spec as any)
+      void sync?.kick()
+      return run
+    }
   )
   tool(
     'update_run',
@@ -192,8 +204,25 @@ export function createMcpServer(ledger: Ledger): McpServer {
     'delete_run',
     'Permanently delete a run with its results and stored files. Other runs keep their numbers.',
     { run_id: z.number().int() },
-    (a) => ledger.deleteRun(a.run_id),
+    (a) => {
+      const run = ledger.getRun(a.run_id)
+      ledger.deleteRun(run.id)
+      void sync?.forget({ experimentId: run.experimentId, runId: run.id })
+    },
     destructive
+  )
+  tool(
+    'archive_run',
+    'Free local disk for a finished run: its files are uploaded to the configured rclone remote, verified, then ' +
+      'deleted from this computer. The run, results and file records stay. Undo with restore_run.',
+    { run_id: z.number().int() },
+    (a) => needSync().archiveRun(a.run_id)
+  )
+  tool(
+    'restore_run',
+    'Download an archived run\'s files back from the remote so they can be opened and read again.',
+    { run_id: z.number().int() },
+    (a) => needSync().restoreRun(a.run_id)
   )
   tool(
     'add_results',
@@ -224,13 +253,22 @@ export function createMcpServer(ledger: Ledger): McpServer {
     'attach_files',
     'Copy local files (absolute paths) into a run. The originals are left in place.',
     { run_id: z.number().int(), paths: z.array(z.string()).min(1) },
-    (a) => ledger.attachFiles(a.run_id, a.paths)
+    (a) => {
+      const files = ledger.attachFiles(a.run_id, a.paths)
+      void sync?.kick()
+      return files
+    }
   )
   tool(
     'delete_file',
     'Delete an attached file and its stored copy.',
     { file_id: z.number().int() },
-    (a) => ledger.deleteFile(a.file_id),
+    (a) => {
+      const file = ledger.getFile(a.file_id)
+      const { experimentId } = ledger.getRun(file.runId)
+      ledger.deleteFile(file.id)
+      void sync?.forget({ experimentId, filePath: file.storedPath })
+    },
     destructive
   )
 

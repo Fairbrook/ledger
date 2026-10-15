@@ -3,6 +3,7 @@ import type { Experiment } from '@shared/types'
 import { api, useDataVersion } from './api'
 import ExperimentForm from './components/ExperimentForm'
 import ExperimentView from './components/ExperimentView'
+import SettingsForm from './components/SettingsForm'
 import { useUi } from './components/Ui'
 
 export default function App() {
@@ -11,6 +12,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [editing, setEditing] = useState<Experiment | 'new' | null>(null)
   const [filter, setFilter] = useState('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const dataVersion = useDataVersion()
 
   const refresh = useCallback(async () => {
@@ -43,6 +45,9 @@ export default function App() {
         <div className="sidebar-section">
           <div className="sidebar-heading">
             <span>Experiments</span>
+            <button className="icon-btn" title="Remote backup settings" onClick={() => setSettingsOpen(true)}>
+              ⚙
+            </button>
             <button className="icon-btn" title="New experiment" onClick={() => setEditing('new')}>
               +
             </button>
@@ -93,6 +98,8 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {settingsOpen && <SettingsForm onClose={() => setSettingsOpen(false)} />}
 
       {editing && (
         <ExperimentForm

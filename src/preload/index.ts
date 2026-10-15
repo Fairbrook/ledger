@@ -15,6 +15,14 @@ const api: LedgerApi = {
   createRun: (experimentId, input) => ipcRenderer.invoke('runs:create', experimentId, input),
   updateRun: (id, input) => ipcRenderer.invoke('runs:update', id, input),
   deleteRun: (id) => ipcRenderer.invoke('runs:delete', id),
+  archiveRun: (id) => ipcRenderer.invoke('runs:archive', id),
+  restoreRun: (id) => ipcRenderer.invoke('runs:restore', id),
+
+  getRemoteSettings: () => ipcRenderer.invoke('remote:getSettings'),
+  saveRemoteSettings: (input) => ipcRenderer.invoke('remote:saveSettings', input),
+  testRemote: () => ipcRenderer.invoke('remote:test'),
+  remoteStatus: () => ipcRenderer.invoke('remote:status'),
+  backupNow: () => ipcRenderer.invoke('remote:backupNow'),
 
   listResults: (runId) => ipcRenderer.invoke('results:list', runId),
   addResults: (runId, inputs) => ipcRenderer.invoke('results:add', runId, inputs),

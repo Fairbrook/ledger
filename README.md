@@ -46,6 +46,20 @@ SQLite comes from Node's built-in `node:sqlite`, so there is no native module to
 are enforced (`ON DELETE CASCADE`), and multi-row writes (batch results, multi-file attach) run in a transaction.
 Schema changes go in `src/main/db.ts` as new, append-only migrations tracked with `PRAGMA user_version`.
 
+## Remote backup and archiving
+
+Run files can be large, so ledger mirrors them to any [rclone](https://rclone.org) remote (Google Drive, S3, SFTP,
+a local folder…). Install rclone, create a remote with `rclone config`, then enter its path (e.g. `gdrive:ledger`)
+under the ⚙ button in the sidebar. `LEDGER_RCLONE_REMOTE` and `LEDGER_RCLONE_BIN` override the dialog.
+
+- Every attached file is uploaded in the background (retried every minute) to `<remote>/<experimentId>/<runId>/`,
+  and the Files table shows `✓ backed up` or `not backed up`.
+- **Archive** (run header) uploads anything missing, verifies the remote copy with `rclone check`, then deletes the
+  run's local files. The run, results, notes and file records stay; the files show `remote only`.
+- **Restore files** downloads them again. Deleting a run, file or experiment also removes its remote copies.
+- The same actions exist as `POST /api/runs/:id/archive|restore` and the `archive_run` / `restore_run` MCP tools.
+  Archive needs the process to have a remote configured; background retries run in the app and `npm run api`.
+
 ## Local API
 
 While the app is open it serves a JSON API on `http://127.0.0.1:4317/api`, so scripts can record runs as they
@@ -79,6 +93,7 @@ curl -X PATCH localhost:4317/api/experiments/1 -H 'Content-Type: application/jso
 | GET / PATCH / DELETE | `/api/runs/:id` | run detail / update given fields (`mergeParams` keeps other params) / delete |
 | POST | `/api/runs/:id/results` | add results (`[...]` or `{ "results": [...] }`) |
 | PATCH / DELETE | `/api/results/:id` | update / delete one result |
+| POST | `/api/runs/:id/archive`, `/api/runs/:id/restore` | upload + verify + delete local files / download them back |
 | POST | `/api/runs/:id/files` | copy files in: `{ "paths": ["/abs/path"] }` |
 | DELETE | `/api/files/:id` | delete an attached file |
 

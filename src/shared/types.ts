@@ -53,6 +53,8 @@ export interface Run {
   updatedAt: string
   resultCount: number
   fileCount: number
+  /** When the run's local files were removed (they live on the remote only); null while they are local. */
+  archivedAt: string | null
 }
 
 export interface RunInput {
@@ -87,6 +89,8 @@ export interface RunFile {
   storedPath: string
   sizeBytes: number
   createdAt: string
+  /** When the file was confirmed uploaded to the remote; null while only local. */
+  backedUpAt: string | null
 }
 
 /** Runs × (parameters, metrics) matrix for comparing the runs of one experiment. */
@@ -154,6 +158,23 @@ export interface AppInfo {
   apiUrl?: string | null
 }
 
+export interface RemoteSettings {
+  /** rclone remote path, e.g. "gdrive:ledger" or a local directory. */
+  remote: string
+  /** rclone executable; empty means "rclone" from PATH. */
+  rcloneBin: string
+}
+
+export interface RemoteStatus {
+  configured: boolean
+  remote: string | null
+  /** Where the active configuration comes from: env vars win over the settings dialog. */
+  source: 'env' | 'settings' | null
+  /** Files waiting to be uploaded. */
+  pending: number
+  lastError: string | null
+}
+
 /** API exposed to the renderer by the preload script (window.ledger). */
 export interface LedgerApi {
   info(): Promise<AppInfo>
@@ -169,6 +190,18 @@ export interface LedgerApi {
   createRun(experimentId: number, input: RunInput): Promise<Run>
   updateRun(id: number, input: RunInput): Promise<Run>
   deleteRun(id: number): Promise<void>
+  /** Uploads what is missing, verifies the remote copy, then deletes the run's local files. */
+  archiveRun(id: number): Promise<Run>
+  /** Downloads an archived run's files back from the remote. */
+  restoreRun(id: number): Promise<Run>
+
+  getRemoteSettings(): Promise<RemoteSettings & { source: RemoteStatus['source'] }>
+  saveRemoteSettings(input: RemoteSettings): Promise<void>
+  /** Runs `rclone version` and a listing of the remote; returns a short description or throws. */
+  testRemote(): Promise<string>
+  remoteStatus(): Promise<RemoteStatus>
+  /** Starts uploading pending files now instead of waiting for the next tick. */
+  backupNow(): Promise<void>
 
   listResults(runId: number): Promise<Result[]>
   addResults(runId: number, inputs: ResultInput[]): Promise<Result[]>

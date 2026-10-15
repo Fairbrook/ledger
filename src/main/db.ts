@@ -61,6 +61,11 @@ const MIGRATIONS: string[] = [
     created_at  TEXT NOT NULL
   );
   CREATE INDEX files_run ON files(run_id);
+  `,
+  `
+  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  ALTER TABLE files ADD COLUMN backed_up_at TEXT;
+  ALTER TABLE runs ADD COLUMN archived_at TEXT;
   `
 ]
 

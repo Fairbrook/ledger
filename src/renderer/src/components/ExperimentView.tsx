@@ -131,6 +131,7 @@ export default function ExperimentView(props: { experiment: Experiment; onEdit: 
                   <span className="run-sub">
                     {formatDate(r.date)} · {r.resultCount} result{r.resultCount === 1 ? '' : 's'}
                     {r.fileCount > 0 && ` · ${r.fileCount} file${r.fileCount === 1 ? '' : 's'}`}
+                    {r.archivedAt && ' · archived'}
                   </span>
                   {r.params.length > 0 && (
                     <span className="run-params">

@@ -586,6 +586,14 @@ input[type='checkbox'] {
 .badge.outcome-partial {
   color: var(--warn);
 }
+.badge.archived {
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: transparent;
+}
+.warn-text {
+  color: var(--warn);
+}
 .badge.outcome-failure {
   color: var(--err);
   background: var(--err-soft);

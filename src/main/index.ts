@@ -1,12 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { RemoteSync } from './archive'
 import { comparisonToCsv } from './csv'
 import { openDatabase } from './db'
 import { DEFAULT_API_PORT, startApiServer } from './http'
 import { Ledger } from './ledger'
 import { resolvePaths } from './paths'
-import type { AppInfo, ExperimentInput, ResultInput, RunInput } from '../shared/types'
+import { remoteFromConfig, resolveRemoteConfig } from './remote'
+import type { AppInfo, ExperimentInput, RemoteSettings, ResultInput, RunInput } from '../shared/types'
 
 let win: BrowserWindow | null = null
 
@@ -55,6 +57,9 @@ app.whenReady().then(async () => {
     }
   }, 1000)
 
+  const sync = new RemoteSync(ledger, () => remoteFromConfig(ledger), notifyChanged)
+  sync.start()
+
   // Local HTTP API on the loopback interface. LEDGER_API=0 turns it off.
   let apiServer: Awaited<ReturnType<typeof startApiServer>>['server'] | null = null
   if (process.env.LEDGER_API !== '0') {
@@ -62,7 +67,8 @@ app.whenReady().then(async () => {
       const started = await startApiServer(ledger, {
         port: Number(process.env.LEDGER_API_PORT) || DEFAULT_API_PORT,
         token: process.env.LEDGER_API_TOKEN || undefined,
-        onChange: notifyChanged
+        onChange: notifyChanged,
+        sync
       })
       apiServer = started.server
       info.apiUrl = started.url
@@ -74,6 +80,7 @@ app.whenReady().then(async () => {
 
   app.on('will-quit', () => {
     clearInterval(poll)
+    sync.stop()
     apiServer?.close()
     db.close()
   })
@@ -83,7 +90,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('experiments:list', () => ledger.listExperiments())
   ipcMain.handle('experiments:create', (_e, input: ExperimentInput) => ledger.createExperiment(input))
   ipcMain.handle('experiments:update', (_e, id: number, input: ExperimentInput) => ledger.updateExperiment(id, input))
-  ipcMain.handle('experiments:delete', (_e, id: number) => ledger.deleteExperiment(id))
+  ipcMain.handle('experiments:delete', (_e, id: number) => {
+    ledger.deleteExperiment(id)
+    void sync.forget({ experimentId: id })
+  })
   ipcMain.handle('experiments:compare', (_e, id: number) => ledger.compare(id))
   ipcMain.handle('experiments:exportCsv', async (_e, id: number) => {
     const exp = ledger.getExperiment(id)
@@ -101,7 +111,30 @@ app.whenReady().then(async () => {
   ipcMain.handle('runs:list', (_e, experimentId: number) => ledger.listRuns(experimentId))
   ipcMain.handle('runs:create', (_e, experimentId: number, input: RunInput) => ledger.createRun(experimentId, input))
   ipcMain.handle('runs:update', (_e, id: number, input: RunInput) => ledger.updateRun(id, input))
-  ipcMain.handle('runs:delete', (_e, id: number) => ledger.deleteRun(id))
+  ipcMain.handle('runs:delete', (_e, id: number) => {
+    const run = ledger.getRun(id)
+    ledger.deleteRun(id)
+    void sync.forget({ experimentId: run.experimentId, runId: id })
+  })
+  ipcMain.handle('runs:archive', (_e, id: number) => sync.archiveRun(id))
+  ipcMain.handle('runs:restore', (_e, id: number) => sync.restoreRun(id))
+
+  ipcMain.handle('remote:getSettings', () => {
+    const { settings, source } = resolveRemoteConfig(ledger)
+    return { ...settings, source }
+  })
+  ipcMain.handle('remote:saveSettings', (_e, input: RemoteSettings) => {
+    ledger.setSetting('remote', (input.remote ?? '').trim())
+    ledger.setSetting('rcloneBin', (input.rcloneBin ?? '').trim())
+    void sync.kick()
+  })
+  ipcMain.handle('remote:test', async () => {
+    const remote = remoteFromConfig(ledger)
+    if (!remote) throw new Error('No remote configured')
+    return remote.test()
+  })
+  ipcMain.handle('remote:status', () => sync.status())
+  ipcMain.handle('remote:backupNow', () => sync.kick())
 
   ipcMain.handle('results:list', (_e, runId: number) => ledger.listResults(runId))
   ipcMain.handle('results:add', (_e, runId: number, inputs: ResultInput[]) => ledger.addResults(runId, inputs))
@@ -116,14 +149,27 @@ app.whenReady().then(async () => {
       properties: ['openFile', 'multiSelections']
     })
     if (res.canceled || res.filePaths.length === 0) return []
-    return ledger.attachFiles(runId, res.filePaths)
+    const added = ledger.attachFiles(runId, res.filePaths)
+    void sync.kick()
+    return added
   })
   ipcMain.handle('files:open', async (_e, id: number) => {
-    const err = await shell.openPath(ledger.filePath(ledger.getFile(id)))
+    const file = ledger.getFile(id)
+    ledger.assertLocal(file)
+    const err = await shell.openPath(ledger.filePath(file))
     if (err) throw new Error(err)
   })
-  ipcMain.handle('files:reveal', (_e, id: number) => shell.showItemInFolder(ledger.filePath(ledger.getFile(id))))
-  ipcMain.handle('files:delete', (_e, id: number) => ledger.deleteFile(id))
+  ipcMain.handle('files:reveal', (_e, id: number) => {
+    const file = ledger.getFile(id)
+    ledger.assertLocal(file)
+    shell.showItemInFolder(ledger.filePath(file))
+  })
+  ipcMain.handle('files:delete', (_e, id: number) => {
+    const file = ledger.getFile(id)
+    const { experimentId } = ledger.getRun(file.runId)
+    ledger.deleteFile(id)
+    void sync.forget({ experimentId, filePath: file.storedPath })
+  })
 
   createWindow()
   app.on('activate', () => {

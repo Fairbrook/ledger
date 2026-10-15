@@ -1,16 +1,19 @@
 // MCP server over stdio for Claude Code and other MCP clients. Opens the same database as the desktop app
 // (or LEDGER_DATA_DIR); the app picks up changes made here while it is open. Logs go to stderr only.
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { RemoteSync } from '../main/archive'
 import { openDatabase } from '../main/db'
 import { Ledger } from '../main/ledger'
 import { createMcpServer } from '../main/mcp'
 import { resolvePaths } from '../main/paths'
+import { remoteFromConfig } from '../main/remote'
 
 const paths = resolvePaths()
 const db = openDatabase(paths.dbFile)
 const ledger = new Ledger(db, paths.filesRoot)
 
-createMcpServer(ledger)
+// No start(): the desktop app (or `npm run api`) retries failed uploads; here uploads only start on attach.
+createMcpServer(ledger, new RemoteSync(ledger, () => remoteFromConfig(ledger)))
   .connect(new StdioServerTransport())
   .then(() => console.error(`[ledger] MCP server ready (database ${paths.dbFile})`))
 

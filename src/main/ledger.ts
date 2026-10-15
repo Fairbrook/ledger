@@ -236,6 +236,7 @@ export class Ledger {
    */
   attachFiles(runId: number, sourcePaths: string[]): RunFile[] {
     const run = this.getRun(runId)
+    if (run.archivedAt) throw new Error(`Run #${run.seq} is archived — restore it first`)
     const dir = this.runDir(run.experimentId, runId)
     fs.mkdirSync(dir, { recursive: true })
     const copied: string[] = []
@@ -268,6 +269,47 @@ export class Ledger {
     const file = this.getFile(id)
     this.db.prepare('DELETE FROM files WHERE id = ?').run(id)
     fs.rmSync(this.filePath(file), { force: true })
+  }
+
+  /** Throws if the file only exists on the remote (its run is archived). */
+  assertLocal(file: RunFile): void {
+    const { archivedAt, seq } = this.getRun(file.runId)
+    if (archivedAt) throw new Error(`"${file.filename}" is archived (run #${seq} is remote only) — restore the run first`)
+  }
+
+  // ---- remote backup state ----------------------------------------------------
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined
+    return row ? String(row.value) : null
+  }
+
+  /** Stores a setting; an empty value removes it. */
+  setSetting(key: string, value: string): void {
+    if (value === '') this.db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+    else this.db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value)
+  }
+
+  /** Local files not yet confirmed on the remote (archived runs have none: archiving requires a verified upload). */
+  pendingBackups(): RunFile[] {
+    const rows = this.db
+      .prepare(
+        `SELECT f.* FROM files f JOIN runs r ON r.id = f.run_id
+         WHERE f.backed_up_at IS NULL AND r.archived_at IS NULL ORDER BY f.id`
+      )
+      .all() as Row[]
+    return rows.map(toFile)
+  }
+
+  markBackedUp(fileIds: number[], ts: string = now()): void {
+    const stmt = this.db.prepare('UPDATE files SET backed_up_at = ? WHERE id = ?')
+    transaction(this.db, () => fileIds.forEach((id) => stmt.run(ts, id)))
+  }
+
+  setArchived(runId: number, ts: string | null): void {
+    const { changes } = this.db.prepare('UPDATE runs SET archived_at = ? WHERE id = ?').run(ts, runId)
+    if (!changes) throw new NotFoundError(`Run ${runId} not found`)
+    this.touchExperiment(this.getRun(runId).experimentId)
   }
 
   // ---- comparison -------------------------------------------------------------
@@ -391,7 +433,8 @@ const toRun = (r: Row): Run => ({
   createdAt: String(r.created_at),
   updatedAt: String(r.updated_at),
   resultCount: Number(r.result_count ?? 0),
-  fileCount: Number(r.file_count ?? 0)
+  fileCount: Number(r.file_count ?? 0),
+  archivedAt: r.archived_at == null ? null : String(r.archived_at)
 })
 
 const toResult = (r: Row): Result => ({
@@ -408,5 +451,6 @@ const toFile = (r: Row): RunFile => ({
   filename: String(r.filename),
   storedPath: String(r.stored_path),
   sizeBytes: Number(r.size_bytes),
-  createdAt: String(r.created_at)
+  createdAt: String(r.created_at),
+  backedUpAt: r.backed_up_at == null ? null : String(r.backed_up_at)
 })
