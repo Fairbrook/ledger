@@ -1,6 +1,9 @@
-import { useMemo, useState } from 'react'
-import type { RunFile } from '@shared/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { OpenWithRule, RunFile } from '@shared/types'
+import { matchRule, programName } from '@shared/openWith'
 import { api, formatBytes, formatDate } from '../api'
+import { Icon, IconButton, type IconName } from './Icons'
+import { OPEN_WITH_CHANGED } from './SettingsForm'
 import { useUi } from './Ui'
 
 interface FolderNode {
@@ -50,6 +53,14 @@ export default function FileList(props: { runId: number; files: RunFile[]; archi
   const ui = useUi()
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const tree = useMemo(() => buildTree(props.files), [props.files])
+  const [rules, setRules] = useState<OpenWithRule[]>([])
+
+  useEffect(() => {
+    const load = () => api.getOpenWith().then(setRules).catch(() => setRules([]))
+    void load()
+    window.addEventListener(OPEN_WITH_CHANGED, load)
+    return () => window.removeEventListener(OPEN_WITH_CHANGED, load)
+  }, [])
 
   const attach = async (opts?: { folder?: boolean; into?: string }) => {
     try {
@@ -113,8 +124,12 @@ export default function FileList(props: { runId: number; files: RunFile[]; archi
 
   const act = (fn: () => Promise<void>) => () => fn().catch(ui.fail)
   const stored = (f: RunFile) => f.storedPath.split('/').pop()
-  const backup = (f: RunFile) =>
-    props.archived ? 'remote only' : f.backedUpAt ? '✓ backed up' : 'not backed up'
+  const backup = (f: RunFile): { icon: IconName; label: string; tone: string } =>
+    props.archived
+      ? { icon: 'cloud', label: 'Remote only', tone: 'muted' }
+      : f.backedUpAt
+        ? { icon: 'cloudCheck', label: `Backed up ${formatDate(f.backedUpAt)}`, tone: 'ok-text' }
+        : { icon: 'cloudOff', label: 'Not backed up', tone: 'warn-text' }
 
   const renderFolder = (node: FolderNode, depth: number): React.ReactNode[] => {
     const open = !collapsed.has(node.path)
@@ -136,9 +151,7 @@ export default function FileList(props: { runId: number; files: RunFile[]; archi
           >
             Attach here…
           </button>
-          <button className="btn small subtle danger" onClick={() => removeFolder(node)}>
-            Delete
-          </button>
+          <IconButton icon="trash" label="Delete folder" danger onClick={() => removeFolder(node)} />
         </td>
       </tr>
     ]
@@ -146,11 +159,14 @@ export default function FileList(props: { runId: number; files: RunFile[]; archi
     return rows
   }
 
-  const renderFile = (f: RunFile, depth: number) => (
+  const renderFile = (f: RunFile, depth: number) => {
+    const rule = matchRule(rules, f.filename)
+    const openLabel = rule ? `Open with ${programName(rule.command)}` : 'Open'
+    return (
     <tr
       key={f.id}
       onDoubleClick={props.archived ? undefined : act(() => api.openFile(f.id))}
-      title={props.archived ? 'Archived: restore the run to open' : 'Double-click to open'}
+      title={props.archived ? 'Archived: restore the run to open' : `Double-click: ${openLabel.toLowerCase()}`}
     >
       <td className="file-name" style={{ paddingLeft: 8 + depth * 18 }}>
         {basename(f.filename)}
@@ -158,20 +174,27 @@ export default function FileList(props: { runId: number; files: RunFile[]; archi
       </td>
       <td className="num nowrap">{formatBytes(f.sizeBytes)}</td>
       <td className="muted nowrap">{formatDate(f.createdAt)}</td>
-      <td className={`nowrap small ${f.backedUpAt || props.archived ? 'muted' : 'warn-text'}`}>{backup(f)}</td>
+      <td className="remote-status">
+        <span className={`status-icon ${backup(f).tone}`} title={backup(f).label} role="img" aria-label={backup(f).label}>
+          <Icon name={backup(f).icon} />
+        </span>
+      </td>
       <td className="actions">
-        <button className="btn small subtle" disabled={props.archived} onClick={act(() => api.openFile(f.id))}>
-          Open
-        </button>
-        <button className="btn small subtle" disabled={props.archived} onClick={act(() => api.revealFile(f.id))}>
-          Show in folder
-        </button>
-        <button className="btn small subtle danger" onClick={() => remove(f)}>
-          Delete
-        </button>
+        <IconButton icon="open" label={openLabel} disabled={props.archived} onClick={act(() => api.openFile(f.id))} />
+        {rule && (
+          <IconButton
+            icon="monitor"
+            label="Open with system default"
+            disabled={props.archived}
+            onClick={act(() => api.openFileWithDefault(f.id))}
+          />
+        )}
+        <IconButton icon="folder" label="Show in folder" disabled={props.archived} onClick={act(() => api.revealFile(f.id))} />
+        <IconButton icon="trash" label="Delete file" danger onClick={() => remove(f)} />
       </td>
     </tr>
-  )
+    )
+  }
 
   const renderChildren = (node: FolderNode, depth: number): React.ReactNode[] => [
     ...node.folders.flatMap((d) => renderFolder(d, depth)),

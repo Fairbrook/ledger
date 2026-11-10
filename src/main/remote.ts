@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import type { Ledger } from './ledger'
 import type { RemoteSettings, RemoteStatus } from '../shared/types'
@@ -10,12 +10,12 @@ import type { RemoteSettings, RemoteStatus } from '../shared/types'
  */
 export interface RemoteStore {
   /** Uploads every file in `localDir` into `remoteRel` (existing identical files are skipped). */
-  copyDir(localDir: string, remoteRel: string): Promise<void>
+  copyDir(localDir: string, remoteRel: string, opts?: TransferOpts): Promise<void>
   copyFile(localFile: string, remoteRel: string): Promise<void>
   /** Throws unless every file in `localDir` exists on the remote with the same content. */
-  checkDir(localDir: string, remoteRel: string): Promise<void>
+  checkDir(localDir: string, remoteRel: string, opts?: TransferOpts): Promise<void>
   /** Downloads everything under `remoteRel` into `localDir`. */
-  download(remoteRel: string, localDir: string): Promise<void>
+  download(remoteRel: string, localDir: string, opts?: TransferOpts): Promise<void>
   /** Removes a directory and its contents; a missing directory is not an error. */
   purge(remoteRel: string): Promise<void>
   deleteFile(remoteRel: string): Promise<void>
@@ -23,18 +23,106 @@ export interface RemoteStore {
   test(): Promise<string>
 }
 
-const MAX_BUFFER = 4 * 1024 * 1024
-const NOT_FOUND = /directory not found|object not found|not found|no such file/i
+/** rclone's running totals, as reported by its `--stats` log lines. */
+export interface TransferStats {
+  bytes: number
+  totalBytes: number
+  transfers: number
+  totalTransfers: number
+  checks: number
+  totalChecks: number
+  /** Seconds remaining as estimated by rclone, or null. */
+  eta: number | null
+}
 
-/** Runs rclone with an argument list (never through a shell) and rejects with its stderr on failure. */
-function run(bin: string, args: string[]): Promise<string> {
+export interface TransferOpts {
+  /** Called about once a second while rclone works. */
+  onProgress?: (stats: TransferStats) => void
+  /** Aborting kills rclone and rejects with an error for which `isCancelled` is true. */
+  signal?: AbortSignal
+}
+
+export const isCancelled = (err: unknown) => (err as Error)?.name === 'AbortError'
+
+const NOT_FOUND = /directory not found|object not found|not found|no such file/i
+/** rclone's note that a `check` could only compare sizes for some files because there is no common hash. */
+const NO_HASH = /hashes could not be checked|no common hash/i
+const STDERR_TAIL = 64 * 1024
+
+/** rclone children still running, so quitting the app can stop them instead of leaving them behind. */
+const live = new Set<ChildProcess>()
+
+export function killAllRclone(): void {
+  for (const child of live) child.kill()
+}
+
+function toStats(raw: Record<string, number | null>): TransferStats {
+  return {
+    bytes: raw.bytes ?? 0,
+    totalBytes: raw.totalBytes ?? 0,
+    transfers: raw.transfers ?? 0,
+    totalTransfers: raw.totalTransfers ?? 0,
+    checks: raw.checks ?? 0,
+    totalChecks: raw.totalChecks ?? 0,
+    eta: raw.eta ?? null
+  }
+}
+
+/**
+ * Runs rclone with an argument list (never through a shell). Rejects with the tail of its stderr on failure.
+ * With `onProgress` it logs JSON stats lines and forwards them as they arrive.
+ */
+function run(bin: string, args: string[], opts: TransferOpts = {}): Promise<{ stdout: string; stderr: string }> {
+  const { onProgress, signal } = opts
+  const argv = onProgress ? [...args, '--use-json-log', '--stats', '1s', '--stats-log-level', 'NOTICE'] : args
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
-      if (!err) return resolve(stdout)
+    const child = spawn(bin, argv, { stdio: ['ignore', 'pipe', 'pipe'], signal })
+    live.add(child)
+    let stdout = ''
+    let stderr = ''
+    let pending = ''
+    const problems: string[] = []
+    const lines: string[] = []
+
+    const handleLine = (line: string) => {
+      if (!line.trim()) return
+      if (onProgress && line.startsWith('{')) {
+        try {
+          const entry = JSON.parse(line) as { level?: string; msg?: string; stats?: Record<string, number | null> }
+          if (entry.stats) return onProgress(toStats(entry.stats))
+          if (entry.msg) (/^(error|critical|fatal)$/.test(entry.level ?? '') ? problems : lines).push(entry.msg.trim())
+          return
+        } catch {
+          // not JSON after all; keep it as plain text
+        }
+      }
+      lines.push(line.trim())
+    }
+
+    child.stdout!.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr!.on('data', (chunk: Buffer) => {
+      const text = chunk.toString()
+      stderr = (stderr + text).slice(-STDERR_TAIL)
+      pending += text
+      const parts = pending.split('\n')
+      pending = parts.pop() ?? ''
+      parts.forEach(handleLine)
+    })
+    child.on('error', (err) => {
+      live.delete(child)
       if ((err as NodeJS.ErrnoException).code === 'ENOENT')
         return reject(new Error(`rclone not found ("${bin}"). Install it from rclone.org or set its path in Settings.`))
-      const detail = String(stderr || err.message).trim().split('\n').slice(-3).join(' | ')
-      reject(new Error(`rclone ${args[0]} failed: ${detail}`))
+      if (isCancelled(err)) return reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' }))
+      reject(err)
+    })
+    child.on('close', (code) => {
+      live.delete(child)
+      handleLine(pending)
+      if (code === 0) return resolve({ stdout, stderr })
+      const detail = (problems.length > 0 ? problems : lines).slice(-3).join(' | ')
+      reject(new Error(`rclone ${args[0]} failed: ${detail || `exit code ${code}`}`))
     })
   })
 }
@@ -52,26 +140,29 @@ export class RcloneRemote implements RemoteStore {
     return this.base.endsWith(':') ? `${this.base}${rel}` : `${base}/${rel}`
   }
 
-  private rclone(args: string[]) {
-    return run(this.bin, [...args, '--retries', '3'])
+  private rclone(args: string[], opts?: TransferOpts) {
+    return run(this.bin, [...args, '--retries', '3'], opts)
   }
 
-  async copyDir(localDir: string, remoteRel: string) {
-    await this.rclone(['copy', localDir, this.target(remoteRel)])
+  async copyDir(localDir: string, remoteRel: string, opts?: TransferOpts) {
+    await this.rclone(['copy', localDir, this.target(remoteRel)], opts)
   }
 
   async copyFile(localFile: string, remoteRel: string) {
     await this.rclone(['copyto', localFile, this.target(remoteRel)])
   }
 
-  async checkDir(localDir: string, remoteRel: string) {
-    // --one-way: only local → remote matters (extra remote files are fine); --download compares content
-    // for backends without hashes instead of trusting sizes alone.
-    await this.rclone(['check', localDir, this.target(remoteRel), '--one-way', '--download'])
+  async checkDir(localDir: string, remoteRel: string, opts?: TransferOpts) {
+    // --one-way: only local → remote matters (extra remote files are fine). Hashes are enough where the
+    // backend has them; when rclone could only compare sizes, redo the check with --download, which reads
+    // the remote content back (slow, so only as a fallback).
+    const args = ['check', localDir, this.target(remoteRel), '--one-way']
+    const { stderr } = await this.rclone(args, opts)
+    if (NO_HASH.test(stderr)) await this.rclone([...args, '--download'], opts)
   }
 
-  async download(remoteRel: string, localDir: string) {
-    await this.rclone(['copy', this.target(remoteRel), localDir])
+  async download(remoteRel: string, localDir: string, opts?: TransferOpts) {
+    await this.rclone(['copy', this.target(remoteRel), localDir], opts)
   }
 
   async purge(remoteRel: string) {
@@ -91,7 +182,7 @@ export class RcloneRemote implements RemoteStore {
   }
 
   async test() {
-    const version = (await run(this.bin, ['version'])).split('\n')[0].trim()
+    const version = (await run(this.bin, ['version'])).stdout.split('\n')[0].trim()
     // lsd on a not-yet-created folder fails with "directory not found", which is fine: it is created on first upload.
     try {
       await run(this.bin, ['lsd', this.base, '--max-depth', '1'])

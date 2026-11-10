@@ -6,9 +6,10 @@ import { comparisonToCsv } from './csv'
 import { openDatabase } from './db'
 import { DEFAULT_API_PORT, startApiServer } from './http'
 import { Ledger, cleanSubfolder } from './ledger'
+import { buildArgv, launch, matchRule, readRules, saveRules } from './openWith'
 import { resolvePaths } from './paths'
-import { remoteFromConfig, resolveRemoteConfig } from './remote'
-import type { AppInfo, ExperimentInput, RemoteSettings, ResultInput, RunInput } from '../shared/types'
+import { killAllRclone, remoteFromConfig, resolveRemoteConfig } from './remote'
+import type { AppInfo, ExperimentInput, OpenWithRule, RemoteSettings, ResultInput, RunInput } from '../shared/types'
 
 let win: BrowserWindow | null = null
 
@@ -57,7 +58,9 @@ app.whenReady().then(async () => {
     }
   }, 1000)
 
-  const sync = new RemoteSync(ledger, () => remoteFromConfig(ledger), notifyChanged)
+  const sync = new RemoteSync(ledger, () => remoteFromConfig(ledger), notifyChanged, (p) =>
+    win?.webContents.send('remote:progress', p)
+  )
   sync.start()
 
   // Local HTTP API on the loopback interface. LEDGER_API=0 turns it off.
@@ -81,6 +84,7 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     clearInterval(poll)
     sync.stop()
+    killAllRclone()
     apiServer?.close()
     db.close()
   })
@@ -118,6 +122,8 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('runs:archive', (_e, id: number) => sync.archiveRun(id))
   ipcMain.handle('runs:restore', (_e, id: number) => sync.restoreRun(id))
+  ipcMain.handle('runs:cancelArchive', (_e, id: number) => sync.cancel(id))
+  ipcMain.handle('remote:active', () => sync.activeTransfers())
 
   ipcMain.handle('remote:getSettings', () => {
     const { settings, source } = resolveRemoteConfig(ledger)
@@ -158,8 +164,25 @@ app.whenReady().then(async () => {
   ipcMain.handle('files:open', async (_e, id: number) => {
     const file = ledger.getFile(id)
     ledger.assertLocal(file)
+    const rule = matchRule(readRules(ledger), file.filename)
+    if (rule) {
+      const { cmd, args } = buildArgv(rule.command, ledger.filePath(file))
+      return launch(cmd, args)
+    }
     const err = await shell.openPath(ledger.filePath(file))
     if (err) throw new Error(err)
+  })
+  ipcMain.handle('files:openDefault', async (_e, id: number) => {
+    const file = ledger.getFile(id)
+    ledger.assertLocal(file)
+    const err = await shell.openPath(ledger.filePath(file))
+    if (err) throw new Error(err)
+  })
+  ipcMain.handle('openWith:get', () => readRules(ledger))
+  ipcMain.handle('openWith:save', (_e, rules: OpenWithRule[]) => saveRules(ledger, rules))
+  ipcMain.handle('openWith:pickProgram', async () => {
+    const res = await dialog.showOpenDialog(win!, { title: 'Choose a program', properties: ['openFile'] })
+    return res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0]
   })
   ipcMain.handle('files:reveal', (_e, id: number) => {
     const file = ledger.getFile(id)

@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react'
-import type { RemoteStatus } from '@shared/types'
+import type { OpenWithRule, RemoteStatus } from '@shared/types'
 import { api, cleanError } from '../api'
+import { Icon, IconButton } from './Icons'
 import Modal from './Modal'
 import { useUi } from './Ui'
 
-/** Remote backup settings: which rclone remote mirrors run files, and the rclone binary to use. */
+/** Fired on `window` after the "Open with" rules are saved, so open file lists refresh their labels. */
+export const OPEN_WITH_CHANGED = 'ledger:open-with-changed'
+
+/** App settings: remote backup (rclone remote and binary) and which program opens each file extension. */
 export default function SettingsForm(props: { onClose: () => void }) {
   const ui = useUi()
   const [remote, setRemote] = useState('')
   const [rcloneBin, setRcloneBin] = useState('')
+  const [rules, setRules] = useState<OpenWithRule[]>([])
   const [source, setSource] = useState<RemoteStatus['source']>(null)
   const [status, setStatus] = useState<RemoteStatus | null>(null)
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null)
@@ -24,13 +29,30 @@ export default function SettingsForm(props: { onClose: () => void }) {
       })
       .catch(ui.fail)
     api.remoteStatus().then(setStatus).catch(ui.fail)
+    api.getOpenWith().then(setRules).catch(ui.fail)
   }, [ui])
 
   const fromEnv = source === 'env'
 
+  const updateRule = (i: number, patch: Partial<OpenWithRule>) =>
+    setRules((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)))
+
+  const browse = async (i: number) => {
+    try {
+      const picked = await api.pickProgram()
+      if (!picked) return
+      // Quote paths with spaces so the command line splits back into the same executable.
+      updateRule(i, { command: /\s/.test(picked) ? `"${picked}"` : picked })
+    } catch (e) {
+      ui.fail(e)
+    }
+  }
+
   const save = async (): Promise<boolean> => {
     try {
       await api.saveRemoteSettings({ remote, rcloneBin })
+      setRules(await api.saveOpenWith(rules))
+      window.dispatchEvent(new Event(OPEN_WITH_CHANGED))
       setStatus(await api.remoteStatus())
       return true
     } catch (e) {
@@ -53,7 +75,7 @@ export default function SettingsForm(props: { onClose: () => void }) {
   }
 
   return (
-    <Modal title="Remote backup" onClose={props.onClose}>
+    <Modal title="Settings" onClose={props.onClose}>
       <form
         onSubmit={async (ev) => {
           ev.preventDefault()
@@ -63,6 +85,7 @@ export default function SettingsForm(props: { onClose: () => void }) {
           }
         }}
       >
+        <h3 className="settings-section">Remote backup</h3>
         <p className="muted small">
           Attached files are copied to an{' '}
           <a href="https://rclone.org/docs/" target="_blank" rel="noreferrer">
@@ -99,6 +122,41 @@ export default function SettingsForm(props: { onClose: () => void }) {
             {status.lastError && <span className="error-text"> Last error: {status.lastError}</span>}
           </p>
         )}
+        <h3 className="settings-section">Open with</h3>
+        <p className="muted small">
+          Open files with a specific program instead of the system default. Use <code>{'{file}'}</code> in the command
+          to place the path; otherwise it is appended. Files with no rule open with the system default.
+        </p>
+        <div className="open-with-rows">
+          {rules.map((r, i) => (
+            <div className="open-with-row" key={i}>
+              <input
+                value={r.ext}
+                onChange={(ev) => updateRule(i, { ext: ev.target.value })}
+                placeholder="rrd"
+                aria-label="File extension"
+              />
+              <input
+                value={r.command}
+                onChange={(ev) => updateRule(i, { command: ev.target.value })}
+                placeholder="rerun"
+                aria-label="Program command"
+              />
+              <button type="button" className="btn small subtle" onClick={() => browse(i)}>
+                Browse…
+              </button>
+              <IconButton
+                icon="trash"
+                label="Remove"
+                danger
+                onClick={() => setRules((prev) => prev.filter((_, j) => j !== i))}
+              />
+            </div>
+          ))}
+        </div>
+        <button type="button" className="btn small" onClick={() => setRules((prev) => [...prev, { ext: '', command: '' }])}>
+          <Icon name="plus" size={14} /> Add program
+        </button>
         <div className="modal-actions">
           <button type="button" className="btn" onClick={test} disabled={busy || !remote.trim()}>
             Test connection

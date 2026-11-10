@@ -1,9 +1,39 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { RemoteStatus, Result, Run, RunFile } from '@shared/types'
-import { api, formatDate, runLabel, useDataVersion } from '../api'
+import type { ArchiveProgress, RemoteStatus, Result, Run, RunFile } from '@shared/types'
+import { api, cleanError, formatBytes, formatDate, runLabel, useDataVersion } from '../api'
 import FileList from './FileList'
+import { ArchivedPill, IconButton } from './Icons'
 import ResultsTable from './ResultsTable'
 import { useUi } from './Ui'
+
+const formatEta = (seconds: number) => {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`
+  const m = Math.round(seconds / 60)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+/** Label and bar value (0–1, or null when unknown) for a transfer in flight. */
+function describeTransfer(p: ArchiveProgress): { label: string; value: number | null } {
+  const eta = p.eta != null ? ` · ${formatEta(p.eta)} left` : ''
+  const files = p.total > 0 ? ` · ${p.done} / ${p.total} file${p.total === 1 ? '' : 's'}` : ''
+  const bytes = p.totalBytes > 0 ? `${formatBytes(p.bytes)} / ${formatBytes(p.totalBytes)}` : formatBytes(p.bytes)
+  const byBytes = p.totalBytes > 0 ? Math.min(1, p.bytes / p.totalBytes) : null
+  switch (p.phase) {
+    case 'uploading':
+      return { label: `Uploading ${bytes}${files}${eta}`, value: byBytes }
+    case 'downloading':
+      return { label: `Downloading ${bytes}${files}${eta}`, value: byBytes }
+    case 'verifying':
+      // Hash checks only count files; a content comparison also moves bytes.
+      if (p.bytes > 0) return { label: `Verifying ${bytes}${files}${eta}`, value: byBytes }
+      return {
+        label: p.total > 0 ? `Verifying ${p.done} / ${p.total} file${p.total === 1 ? '' : 's'}` : 'Verifying the remote copy…',
+        value: p.total > 0 ? p.done / p.total : null
+      }
+    case 'removing':
+      return { label: 'Removing local files…', value: null }
+  }
+}
 
 export default function RunDetail(props: { run: Run; onEdit: () => void; onChanged: () => void }) {
   const { run, onChanged } = props
@@ -13,20 +43,24 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
   const [knownMetrics, setKnownMetrics] = useState<{ label: string; unit: string }[]>([])
   const [remote, setRemote] = useState<RemoteStatus | null>(null)
   const [working, setWorking] = useState(false)
+  const [transfer, setTransfer] = useState<ArchiveProgress | null>(null)
   const dataVersion = useDataVersion()
 
   const reload = useCallback(async () => {
     try {
-      const [res, fs, cmp, rem] = await Promise.all([
+      const [res, fs, cmp, rem, active] = await Promise.all([
         api.listResults(run.id),
         api.listFiles(run.id),
         api.compareRuns(run.experimentId),
-        api.remoteStatus()
+        api.remoteStatus(),
+        api.activeTransfers()
       ])
       setResults(res)
       setFiles(fs)
       setKnownMetrics(cmp.metrics)
       setRemote(rem)
+      // Also picks up an archive that started before this window loaded, and clears one that has finished.
+      setTransfer(active.find((p) => p.runId === run.id) ?? null)
     } catch (e) {
       ui.fail(e)
     }
@@ -35,6 +69,8 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
   useEffect(() => {
     reload()
   }, [reload])
+
+  useEffect(() => api.onRemoteProgress((p) => p.runId === run.id && setTransfer(p)), [run.id])
 
   const changed = useCallback(async () => {
     await reload()
@@ -60,8 +96,10 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
       ui.toast(`Run #${run.seq} archived`)
       await changed()
     } catch (e) {
-      ui.fail(e)
+      if (cleanError(e) === 'Cancelled') ui.toast('Archive cancelled; files kept locally')
+      else ui.fail(e)
     }
+    setTransfer(null)
     setWorking(false)
   }
 
@@ -72,10 +110,15 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
       ui.toast(`Run #${run.seq} restored`)
       await changed()
     } catch (e) {
-      ui.fail(e)
+      if (cleanError(e) === 'Cancelled') ui.toast('Restore cancelled')
+      else ui.fail(e)
     }
+    setTransfer(null)
     setWorking(false)
   }
+
+  const busy = working || transfer !== null
+  const progress = transfer && describeTransfer(transfer)
 
   const deleteRun = async () => {
     const ok = await ui.confirm({
@@ -105,35 +148,42 @@ export default function RunDetail(props: { run: Run; onEdit: () => void; onChang
           <h2>{runLabel(run)}</h2>
           <div className="meta-line">
             <span className={`badge outcome-${run.outcome}`}>{run.outcome}</span>
-            {run.archivedAt && (
-              <span className="badge archived" title={`Archived ${formatDate(run.archivedAt)}`}>
-                archived
-              </span>
-            )}
+            {run.archivedAt && <ArchivedPill title={`Archived ${formatDate(run.archivedAt)}`} />}
             <span className="muted">{formatDate(run.date)}</span>
           </div>
         </div>
         <div className="header-actions">
           {run.archivedAt ? (
-            <button className="btn subtle" onClick={restore} disabled={working || !remote?.configured}>
-              {working ? 'Restoring…' : 'Restore files'}
-            </button>
+            <IconButton
+              icon="restore"
+              label={busy ? 'Restoring…' : 'Restore files'}
+              onClick={restore}
+              disabled={busy || !remote?.configured}
+            />
           ) : (
             files.length > 0 &&
             remote?.configured && (
-              <button className="btn subtle" onClick={archive} disabled={working}>
-                {working ? 'Archiving…' : 'Archive'}
-              </button>
+              <IconButton icon="archive" label={busy ? 'Archiving…' : 'Archive run'} onClick={archive} disabled={busy} />
             )
           )}
-          <button className="btn subtle" onClick={props.onEdit}>
-            Edit
-          </button>
-          <button className="btn subtle danger" onClick={deleteRun}>
-            Delete
-          </button>
+          <IconButton icon="edit" label="Edit run" onClick={props.onEdit} />
+          <IconButton icon="trash" label="Delete run" danger onClick={deleteRun} />
         </div>
       </header>
+
+      {busy && (
+        <div className="transfer-progress" role="status">
+          <div className="transfer-line">
+            <span>{progress?.label ?? 'Starting…'}</span>
+            {transfer && transfer.phase !== 'removing' && (
+              <button className="btn subtle small" onClick={() => api.cancelArchive(run.id)}>
+                Cancel
+              </button>
+            )}
+          </div>
+          <progress max={1} value={progress?.value ?? undefined} />
+        </div>
+      )}
 
       <section className="block">
         <h3>What was tested</h3>

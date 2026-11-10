@@ -166,6 +166,14 @@ export interface RemoteSettings {
   rcloneBin: string
 }
 
+/** Opens files with a given extension in a specific program instead of the system default. */
+export interface OpenWithRule {
+  /** Extension without the leading dot, lowercase (e.g. "rrd", "tar.gz"). */
+  ext: string
+  /** Command line; `{file}` marks where the path goes, otherwise it is appended (e.g. "rerun"). */
+  command: string
+}
+
 export interface RemoteStatus {
   configured: boolean
   remote: string | null
@@ -174,6 +182,21 @@ export interface RemoteStatus {
   /** Files waiting to be uploaded. */
   pending: number
   lastError: string | null
+}
+
+/** Live state of an archive or restore, pushed to the window while it runs. */
+export interface ArchiveProgress {
+  runId: number
+  op: 'archive' | 'restore'
+  phase: 'uploading' | 'verifying' | 'removing' | 'downloading'
+  /** Bytes moved so far in this phase, and the expected total (0 while unknown). */
+  bytes: number
+  totalBytes: number
+  /** Files finished and expected in this phase (transfers, or checks while verifying). */
+  done: number
+  total: number
+  /** Seconds remaining as estimated by rclone, or null. */
+  eta: number | null
 }
 
 /** API exposed to the renderer by the preload script (window.ledger). */
@@ -195,6 +218,12 @@ export interface LedgerApi {
   archiveRun(id: number): Promise<Run>
   /** Downloads an archived run's files back from the remote. */
   restoreRun(id: number): Promise<Run>
+  /** Aborts an archive or restore that is uploading, verifying or downloading; the run's files stay as they were. */
+  cancelArchive(id: number): Promise<void>
+  /** Archives and restores running right now, so a reloaded window can show their progress. */
+  activeTransfers(): Promise<ArchiveProgress[]>
+  /** Subscribes to archive/restore progress. Returns an unsubscribe function. */
+  onRemoteProgress(cb: (p: ArchiveProgress) => void): () => void
 
   getRemoteSettings(): Promise<RemoteSettings & { source: RemoteStatus['source'] }>
   saveRemoteSettings(input: RemoteSettings): Promise<void>
@@ -216,6 +245,12 @@ export interface LedgerApi {
    */
   attachFiles(runId: number, opts?: { folder?: boolean; into?: string }): Promise<RunFile[]>
   openFile(id: number): Promise<void>
+  /** Opens with the system default handler, ignoring any "Open with" rule. */
+  openFileWithDefault(id: number): Promise<void>
+  getOpenWith(): Promise<OpenWithRule[]>
+  saveOpenWith(rules: OpenWithRule[]): Promise<OpenWithRule[]>
+  /** Shows a file picker for an executable; returns its path or null if cancelled. */
+  pickProgram(): Promise<string | null>
   revealFile(id: number): Promise<void>
   deleteFile(id: number): Promise<void>
 

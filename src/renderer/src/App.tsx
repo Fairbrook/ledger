@@ -45,7 +45,7 @@ export default function App() {
         <div className="sidebar-section">
           <div className="sidebar-heading">
             <span>Experiments</span>
-            <button className="icon-btn" title="Remote backup settings" onClick={() => setSettingsOpen(true)}>
+            <button className="icon-btn" title="Settings" onClick={() => setSettingsOpen(true)}>
               ⚙
             </button>
             <button className="icon-btn" title="New experiment" onClick={() => setEditing('new')}>

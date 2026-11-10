@@ -55,10 +55,25 @@ under the ⚙ button in the sidebar. `LEDGER_RCLONE_REMOTE` and `LEDGER_RCLONE_B
 - Every attached file is uploaded in the background (retried every minute) to `<remote>/<experimentId>/<runId>/`,
   and the Files table shows `✓ backed up` or `not backed up`.
 - **Archive** (run header) uploads anything missing, verifies the remote copy with `rclone check`, then deletes the
-  run's local files. The run, results, notes and file records stay; the files show `remote only`.
+  run's local files. The run, results, notes and file records stay; the files show `remote only`. The run header
+  shows a progress bar (uploading → verifying → removing) with a Cancel button until the remote copy is verified.
+  Verification compares hashes; only when the remote has none does it download the files back to compare content.
 - **Restore files** downloads them again. Deleting a run, file or experiment also removes its remote copies.
 - The same actions exist as `POST /api/runs/:id/archive|restore` and the `archive_run` / `restore_run` MCP tools.
   Archive needs the process to have a remote configured; background retries run in the app and `npm run api`.
+
+## Opening files with a specific program
+
+By default a run file opens with the system's default handler. Formats the desktop doesn't know, such as Rerun
+recordings, can be mapped to a program under ⚙ → **Open with**: enter an extension and a command (`rrd` → `rerun`),
+or pick the executable with **Browse…**. The Open button and double-click then launch that program, and files with no
+rule still use the system default (a second button on matching files opens them that way too).
+
+- The command is split into arguments without a shell, so quote paths with spaces. `{file}` marks where the file path
+  goes (`code -n {file}`); otherwise the path is appended.
+- The longest matching extension wins (`tar.gz` over `gz`), case-insensitively.
+- A GUI-launched app (AppImage, desktop entry) may not have `~/.local/bin` on its `PATH`; if the program isn't
+  found, use its full path.
 
 ## Local API
 

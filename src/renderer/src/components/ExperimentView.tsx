@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Experiment, Run } from '@shared/types'
 import { api, formatDate, runLabel, useDataVersion } from '../api'
 import CompareView from './CompareView'
+import { ArchivedPill } from './Icons'
 import RunDetail from './RunDetail'
 import RunForm, { type RunFormTarget } from './RunForm'
 import SummaryView from './SummaryView'
@@ -126,12 +127,14 @@ export default function ExperimentView(props: { experiment: Experiment; onEdit: 
                 >
                   <span className="run-top">
                     <span className="run-name">{runLabel(r)}</span>
-                    <span className={`badge outcome-${r.outcome}`}>{r.outcome}</span>
+                    <span className="run-badges">
+                      <span className={`badge outcome-${r.outcome}`}>{r.outcome}</span>
+                      {r.archivedAt && <ArchivedPill title={`Archived ${formatDate(r.archivedAt)}`} />}
+                    </span>
                   </span>
                   <span className="run-sub">
                     {formatDate(r.date)} · {r.resultCount} result{r.resultCount === 1 ? '' : 's'}
                     {r.fileCount > 0 && ` · ${r.fileCount} file${r.fileCount === 1 ? '' : 's'}`}
-                    {r.archivedAt && ' · archived'}
                   </span>
                   {r.params.length > 0 && (
                     <span className="run-params">

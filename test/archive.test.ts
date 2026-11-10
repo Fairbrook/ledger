@@ -8,15 +8,26 @@ import { RemoteSync } from '../src/main/archive'
 import { openDatabase } from '../src/main/db'
 import { startApiServer } from '../src/main/http'
 import { Ledger } from '../src/main/ledger'
-import { RcloneRemote, type RemoteStore } from '../src/main/remote'
+import { RcloneRemote, isCancelled, type RemoteStore, type TransferOpts } from '../src/main/remote'
+import type { ArchiveProgress } from '../src/shared/types'
 
 /** A remote backed by a plain directory, with switches to simulate failures. */
 class FakeRemote implements RemoteStore {
   failCheck = false
   failUpload = false
+  /** When set, copyDir waits for it (or for the abort signal) before copying. */
+  gate: Promise<void> | null = null
   constructor(readonly dir: string) {}
   private p = (rel: string) => path.join(this.dir, rel)
-  async copyDir(localDir: string, rel: string) {
+  async copyDir(localDir: string, rel: string, opts?: TransferOpts) {
+    const stats = { bytes: 1, totalBytes: 2, transfers: 0, totalTransfers: 1, checks: 0, totalChecks: 0, eta: null }
+    opts?.onProgress?.(stats)
+    if (this.gate) {
+      await new Promise<void>((resolve, reject) => {
+        opts?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' })))
+        this.gate!.then(resolve)
+      })
+    }
     fs.mkdirSync(this.p(rel), { recursive: true })
     fs.cpSync(localDir, this.p(rel), { recursive: true })
   }
@@ -25,7 +36,8 @@ class FakeRemote implements RemoteStore {
     fs.mkdirSync(path.dirname(this.p(rel)), { recursive: true })
     fs.copyFileSync(local, this.p(rel))
   }
-  async checkDir() {
+  async checkDir(_localDir: string, _rel: string, opts?: TransferOpts) {
+    opts?.onProgress?.({ bytes: 0, totalBytes: 0, transfers: 0, totalTransfers: 0, checks: 1, totalChecks: 1, eta: null })
     if (this.failCheck) throw new Error('checksum mismatch')
   }
   async download(rel: string, localDir: string) {
@@ -200,6 +212,52 @@ test('http: archive and restore endpoints', async () => {
   }
 })
 
+test('archive reports phases in order and clears its state afterwards', async () => {
+  const { ledger, remote, run, src, done } = setup()
+  try {
+    const seen: ArchiveProgress[] = []
+    const sync = new RemoteSync(ledger, () => remote, undefined, (p) => seen.push(p))
+    ledger.attachFiles(run.id, [src])
+    await sync.archiveRun(run.id)
+    const phases = seen.map((p) => p.phase).filter((phase, i, all) => phase !== all[i - 1])
+    assert.deepEqual(phases, ['uploading', 'verifying', 'removing'])
+    assert.ok(seen.every((p) => p.runId === run.id && p.op === 'archive'))
+    assert.equal(seen[0].totalBytes, fs.statSync(src).size, 'expected size comes from the local files')
+    assert.deepEqual(sync.activeTransfers(), [])
+
+    seen.length = 0
+    await sync.restoreRun(run.id)
+    assert.deepEqual([...new Set(seen.map((p) => p.phase))], ['downloading'])
+    assert.equal(seen[0].op, 'restore')
+  } finally {
+    done()
+  }
+})
+
+test('cancelling an upload keeps the run local and lets it be archived again', async () => {
+  const { ledger, remote, run, src, done } = setup()
+  try {
+    const sync = new RemoteSync(ledger, () => remote)
+    ledger.attachFiles(run.id, [src])
+    let release!: () => void
+    remote.gate = new Promise<void>((resolve) => (release = resolve))
+
+    const pending = sync.archiveRun(run.id)
+    assert.equal(sync.activeTransfers().length, 1)
+    sync.cancel(run.id)
+    await assert.rejects(pending, (err) => isCancelled(err) && /Cancelled/.test((err as Error).message))
+    assert.equal(ledger.getRun(run.id).archivedAt, null)
+    assert.ok(fs.existsSync(ledger.runDir(run.experimentId, run.id)))
+    assert.deepEqual(sync.activeTransfers(), [])
+
+    remote.gate = null
+    release()
+    assert.ok((await sync.archiveRun(run.id)).archivedAt, 'the run is not stuck as busy')
+  } finally {
+    done()
+  }
+})
+
 const hasRclone = (() => {
   try {
     execFileSync('rclone', ['version'], { stdio: 'ignore' })
@@ -224,5 +282,59 @@ test('rclone: round trip against a local-directory remote', { skip: !hasRclone &
     await remote.purge('does/not/exist') // missing folders are not an error
   } finally {
     done()
+  }
+})
+
+/** A fake `rclone` executable: logs its arguments, prints JSON stats lines, and can report missing hashes. */
+function stubRclone(root: string, opts: { noHash?: boolean; fail?: boolean } = {}) {
+  const log = path.join(root, 'rclone-args.log')
+  const bin = path.join(root, 'rclone-stub')
+  const stats = '{"level":"notice","msg":"stats","stats":{"bytes":50,"totalBytes":100,"transfers":1,"totalTransfers":2,"checks":0,"totalChecks":0,"eta":7}}'
+  fs.writeFileSync(
+    bin,
+    [
+      '#!/bin/sh',
+      `echo "$*" >> '${log}'`,
+      `echo '${stats}' >&2`,
+      opts.noHash ? `case "$*" in *--download*) ;; *) echo '{"level":"notice","msg":"2 hashes could not be checked"}' >&2 ;; esac` : '',
+      opts.fail ? `echo '{"level":"error","msg":"boom: quota exceeded"}' >&2; exit 1` : '',
+      'exit 0'
+    ].join('\n'),
+    { mode: 0o755 }
+  )
+  return { bin, calls: () => fs.readFileSync(log, 'utf8').trim().split('\n') }
+}
+
+test('rclone runner forwards stats as progress and surfaces error lines', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-stub-'))
+  try {
+    const ok = stubRclone(root)
+    const seen: unknown[] = []
+    await new RcloneRemote(ok.bin, 'r:base').copyDir('/tmp/x', '1/2', { onProgress: (s) => seen.push(s) })
+    assert.deepEqual(seen, [{ bytes: 50, totalBytes: 100, transfers: 1, totalTransfers: 2, checks: 0, totalChecks: 0, eta: 7 }])
+    assert.match(ok.calls()[0], /^copy \/tmp\/x r:base\/1\/2 --retries 3 --use-json-log --stats 1s/)
+
+    const bad = stubRclone(root, { fail: true })
+    await assert.rejects(new RcloneRemote(bad.bin, 'r:base').copyDir('/tmp/x', '1/2', { onProgress() {} }), /boom: quota exceeded/)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('rclone check only reads content back when there is no common hash', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ledger-stub-'))
+  try {
+    const hashed = stubRclone(root)
+    await new RcloneRemote(hashed.bin, 'r:base').checkDir('/tmp/x', '1/2')
+    assert.equal(hashed.calls().length, 1)
+    assert.ok(!hashed.calls()[0].includes('--download'))
+    fs.rmSync(path.join(root, 'rclone-args.log'))
+
+    const hashless = stubRclone(root, { noHash: true })
+    await new RcloneRemote(hashless.bin, 'r:base').checkDir('/tmp/x', '1/2')
+    assert.equal(hashless.calls().length, 2)
+    assert.ok(hashless.calls()[1].includes('--download'))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

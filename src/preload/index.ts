@@ -17,6 +17,13 @@ const api: LedgerApi = {
   deleteRun: (id) => ipcRenderer.invoke('runs:delete', id),
   archiveRun: (id) => ipcRenderer.invoke('runs:archive', id),
   restoreRun: (id) => ipcRenderer.invoke('runs:restore', id),
+  cancelArchive: (id) => ipcRenderer.invoke('runs:cancelArchive', id),
+  activeTransfers: () => ipcRenderer.invoke('remote:active'),
+  onRemoteProgress: (cb) => {
+    const listener = (_e: unknown, p: Parameters<typeof cb>[0]) => cb(p)
+    ipcRenderer.on('remote:progress', listener)
+    return () => ipcRenderer.off('remote:progress', listener)
+  },
 
   getRemoteSettings: () => ipcRenderer.invoke('remote:getSettings'),
   saveRemoteSettings: (input) => ipcRenderer.invoke('remote:saveSettings', input),
@@ -32,6 +39,10 @@ const api: LedgerApi = {
   listFiles: (runId) => ipcRenderer.invoke('files:list', runId),
   attachFiles: (runId, opts) => ipcRenderer.invoke('files:attach', runId, opts),
   openFile: (id) => ipcRenderer.invoke('files:open', id),
+  openFileWithDefault: (id) => ipcRenderer.invoke('files:openDefault', id),
+  getOpenWith: () => ipcRenderer.invoke('openWith:get'),
+  saveOpenWith: (rules) => ipcRenderer.invoke('openWith:save', rules),
+  pickProgram: () => ipcRenderer.invoke('openWith:pickProgram'),
   revealFile: (id) => ipcRenderer.invoke('files:reveal', id),
   deleteFile: (id) => ipcRenderer.invoke('files:delete', id),
 
